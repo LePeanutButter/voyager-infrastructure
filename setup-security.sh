@@ -91,7 +91,7 @@ add_security_group_rules() {
             --group-id "$sg_id" \
             --protocol "$protocol" \
             --port "$port" \
-            $source_param || error_exit "Failed to add security group rule"
+            $source_param 2>/dev/null || error_exit "Failed to add security group rule"
     done
     
     success "Security group rules added"
