@@ -1,0 +1,152 @@
+{
+  "project": {
+    "name": "smarttrip",
+    "environment": "production",
+    "region": "us-east-1",
+    "owner": "voyager-team"
+  },
+  "tags": {
+    "Environment": "production",
+    "Project": "smarttrip",
+    "ManagedBy": "aws-cli",
+    "Owner": "voyager-team"
+  },
+  "vpc": {
+    "cidr": "10.0.0.0/16",
+    "public_subnets": [
+      {
+        "cidr": "10.0.1.0/24",
+        "availability_zone": "us-east-1a",
+        "name": "public-subnet-1"
+      },
+      {
+        "cidr": "10.0.2.0/24", 
+        "availability_zone": "us-east-1b",
+        "name": "public-subnet-2"
+      }
+    ]
+  },
+  "database": {
+    "backend": {
+      "identifier": "smarttrip-backend-db",
+      "instance_class": "db.t3.micro",
+      "engine": "postgres",
+      "engine_version": "15.4",
+      "storage": 20,
+      "storage_type": "gp2",
+      "username": "smarttrip_user",
+      "password": "SmartTrip2024!",
+      "backup_retention": 7
+    },
+    "ai_service": {
+      "identifier": "smarttrip-ai-db", 
+      "instance_class": "db.t3.micro",
+      "engine": "postgres",
+      "engine_version": "15.4",
+      "storage": 20,
+      "storage_type": "gp2",
+      "username": "smarttrip_user",
+      "password": "SmartTrip2024!",
+      "backup_retention": 7
+    }
+  },
+  "compute": {
+    "backend": {
+      "instance_type": "t3.micro",
+      "min_capacity": 1,
+      "max_capacity": 3,
+      "desired_capacity": 2,
+      "ami": "ami-0c55b159cbfafe1f0",
+      "key_name": "smarttrip-key"
+    },
+    "ai_service": {
+      "instance_type": "t3.micro",
+      "min_capacity": 1,
+      "max_capacity": 2,
+      "desired_capacity": 1,
+      "ami": "ami-0c55b159cbfafe1f0",
+      "key_name": "smarttrip-key"
+    }
+  },
+  "storage": {
+    "frontend_bucket": "smarttrip-frontend-$(date +%s)",
+    "media_bucket": "smarttrip-media-$(date +%s)",
+    "logs_bucket": "smarttrip-logs-$(date +%s)"
+  },
+  "security": {
+    "backend_sg": {
+      "name": "smarttrip-backend-sg",
+      "description": "Security group for backend service",
+      "ingress": [
+        {
+          "protocol": "tcp",
+          "port": 8080,
+          "source": "0.0.0.0/0"
+        },
+        {
+          "protocol": "tcp",
+          "port": 22,
+          "source": "0.0.0.0/0"
+        }
+      ]
+    },
+    "ai_service_sg": {
+      "name": "smarttrip-ai-service-sg",
+      "description": "Security group for AI service",
+      "ingress": [
+        {
+          "protocol": "tcp",
+          "port": 8000,
+          "source": "0.0.0.0/0"
+        },
+        {
+          "protocol": "tcp",
+          "port": 22,
+          "source": "0.0.0.0/0"
+        }
+      ]
+    },
+    "database_sg": {
+      "name": "smarttrip-database-sg",
+      "description": "Security group for databases",
+      "ingress": [
+        {
+          "protocol": "tcp",
+          "port": 5432,
+          "source": "smarttrip-backend-sg"
+        },
+        {
+          "protocol": "tcp",
+          "port": 5432,
+          "source": "smarttrip-ai-service-sg"
+        }
+      ]
+    }
+  },
+  "api_gateway": {
+    "name": "smarttrip-api",
+    "description": "API Gateway for SmartTrip services",
+    "stage_name": "prod"
+  },
+  "message_queues": {
+    "user_events_queue": "smarttrip-user-events",
+    "recommendation_events_queue": "smarttrip-recommendation-events",
+    "analytics_events_queue": "smarttrip-analytics-events",
+    "user_events_topic": "smarttrip-user-events",
+    "recommendation_events_topic": "smarttrip-recommendation-events",
+    "system_events_topic": "smarttrip-system-events"
+  },
+  "monitoring": {
+    "log_groups": [
+      "/smarttrip/backend",
+      "/smarttrip/ai-service", 
+      "/smarttrip/application",
+      "/smarttrip/infrastructure"
+    ],
+    "alarms": {
+      "cpu_high_threshold": 70,
+      "cpu_low_threshold": 20,
+      "queue_depth_threshold": 100
+    }
+  }
+}
