@@ -150,49 +150,59 @@ flowchart LR
 WebBrowser[Web Browser]
 MobileApp[Mobile App]
 
-%% Edge / Frontend
-CloudFront[CloudFront]
-ReactApp[React App (S3)]
+%% Edge Layer
+CloudFront[CloudFront CDN]
+S3Frontend[S3 (React App)]
 
-API[API Gateway]
-LoadBalancer[Load Balancer]
+%% API Layer
+APIGateway[API Gateway]
 
-%% Compute / Backend
-EC2[EC2 Instances\n(Auto Scaling)]
-Backend[Backend Service\nPort 8080]
-AI[AI Service\nPort 8000]
+%% Compute Layer
+ALB[Application Load Balancer]
+Backend[Backend Service (Spring Boot)\nPort 8080]
+AI[AI Service (FastAPI)\nPort 8000]
 
 %% Data Layer
-RDS[PostgreSQL RDS\ndb.t3.micro]
-S3[S3 Media Storage\nPublic Assets]
+RDS[(PostgreSQL RDS db.t3.micro)]
+S3Storage[(S3 Media Storage)]
 
 %% Messaging
-SQS[SQS Queues\nEvent Processing]
-SNS[SNS Topics\nEvent Broadcasting]
+SNS[SNS Topics]
+SQS[SQS Queues]
 
 %% Observability
-Logs[CloudWatch Logs\nMonitoring]
+CloudWatch[CloudWatch Logs & Metrics]
 
-%% Connections
-WebBrowser --> CloudFront --> ReactApp
-MobileApp --> API
-WebBrowser --> API
-API --> LoadBalancer
-LoadBalancer --> Backend
-LoadBalancer --> AI
+%% Frontend Flow
+WebBrowser --> CloudFront --> S3Frontend
+CloudFront --> APIGateway
+MobileApp --> APIGateway
+
+%% API Routing
+APIGateway --> ALB
+
+%% Backend Services
+ALB --> Backend
+ALB --> AI
+
+%% Data Access
 Backend --> RDS
 AI --> RDS
-Backend --> SQS
-AI --> SQS
-SQS --> SNS
-SNS --> Backend
-Backend --> S3
-AI --> S3
+
+Backend --> S3Storage
+AI --> S3Storage
+
+%% Messaging Flow (fixed pattern)
+Backend --> SNS
+AI --> SNS
+SNS --> SQS
+SQS --> Backend
 
 %% Monitoring
-Backend --> Logs
-AI --> Logs
-API --> Logs
+Backend --> CloudWatch
+AI --> CloudWatch
+APIGateway --> CloudWatch
+ALB --> CloudWatch
 ```
 
 ### Academy Lab Compliance

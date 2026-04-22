@@ -6,7 +6,7 @@ set -e
 
 # Source configuration and utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.json"
+CONFIG_FILE="$SCRIPT_DIR/config.json"
 
 # Resource ID storage
 RESOURCE_IDS_FILE="$SCRIPT_DIR/resource-ids.txt"
