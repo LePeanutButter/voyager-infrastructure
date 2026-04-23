@@ -29,7 +29,7 @@
   "database": {
     "backend": {
       "identifier": "smarttrip-backend-db",
-      "instance_class": "db.t3.small",
+      "instance_class": "db.t3.micro",
       "engine": "postgres",
       "engine_version": "17.6",
       "storage": 20,
@@ -40,7 +40,7 @@
     },
     "ai_service": {
       "identifier": "smarttrip-ai-db", 
-      "instance_class": "db.t3.small",
+      "instance_class": "db.t3.micro",
       "engine": "postgres",
       "engine_version": "17.6",
       "storage": 20,

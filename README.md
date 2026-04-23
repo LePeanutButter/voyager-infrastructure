@@ -147,31 +147,31 @@ Remove all resources:
 flowchart LR
 
 %% Clients
-WebBrowser[Web Browser]
-MobileApp[Mobile App]
+WebBrowser["Web Browser"]
+MobileApp["Mobile App"]
 
 %% Edge Layer
-CloudFront[CloudFront CDN]
-S3Frontend[S3 (React App)]
+CloudFront["CloudFront CDN"]
+S3Frontend["S3 (React App)"]
 
 %% API Layer
-APIGateway[API Gateway]
+APIGateway["API Gateway"]
 
 %% Compute Layer
-ALB[Application Load Balancer]
-Backend[Backend Service (Spring Boot)<br/>Port 8080]
-AI[AI Service (FastAPI)<br/>Port 8000]
+ALB["Application Load Balancer"]
+Backend["Backend Service (Spring Boot)\nPort 8080"]
+AI["AI Service (FastAPI)\nPort 8000"]
 
 %% Data Layer
-RDS[(PostgreSQL RDS db.t3.micro)]
-S3Storage[(S3 Media Storage)]
+RDS[("PostgreSQL RDS db.t3.micro")]
+S3Storage[("S3 Media Storage")]
 
 %% Messaging
-SNS[SNS Topics]
-SQS[SQS Queues]
+SNS["SNS Topics"]
+SQS["SQS Queues"]
 
 %% Observability
-CloudWatch[CloudWatch Logs & Metrics]
+CloudWatch["CloudWatch Logs & Metrics"]
 
 %% Frontend Flow
 WebBrowser --> CloudFront --> S3Frontend
