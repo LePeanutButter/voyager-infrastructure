@@ -159,8 +159,8 @@ APIGateway[API Gateway]
 
 %% Compute Layer
 ALB[Application Load Balancer]
-Backend[Backend Service (Spring Boot)\nPort 8080]
-AI[AI Service (FastAPI)\nPort 8000]
+Backend[Backend Service (Spring Boot)<br/>Port 8080]
+AI[AI Service (FastAPI)<br/>Port 8000]
 
 %% Data Layer
 RDS[(PostgreSQL RDS db.t3.micro)]
@@ -192,7 +192,7 @@ AI --> RDS
 Backend --> S3Storage
 AI --> S3Storage
 
-%% Messaging Flow (fixed pattern)
+%% Messaging Flow
 Backend --> SNS
 AI --> SNS
 SNS --> SQS

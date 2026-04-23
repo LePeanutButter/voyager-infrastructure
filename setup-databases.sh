@@ -131,10 +131,10 @@ create_rds_instance() {
         --db-subnet-group-name "$db_subnet_group_name" \
         --vpc-security-group-ids "$database_sg_id" \
         --backup-retention-period "$backup_retention" \
-        --multi-az false \
-        --publicly-accessible false \
-        --storage-encrypted false \
-        --deletion-protection false \
+        --no-multi-az \
+        --no-publicly-accessible \
+        --no-storage-encrypted \
+        --no-deletion-protection \
         --tags Key=Name,Value="$project_name-$identifier" Key=Project,Value="$project_name" || error_exit "Failed to create RDS instance: $identifier"
     
     echo "$db_key=$identifier" >> "$RESOURCE_IDS_FILE"
