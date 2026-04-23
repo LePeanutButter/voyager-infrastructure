@@ -13,18 +13,18 @@ RESOURCE_IDS_FILE="$SCRIPT_DIR/resource-ids.txt"
 
 # Logging function
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Security Setup - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Security Setup - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
 # Error handling
 error_exit() {
-    echo "ERROR: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "ERROR: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
     exit 1
 }
 
 # Success message
 success() {
-    echo "SUCCESS: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "SUCCESS: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
 # Get VPC ID
@@ -56,7 +56,7 @@ create_security_group() {
     fi
     
     echo "$sg_key=$sg_id" >> "$RESOURCE_IDS_FILE"
-    success "Security group $sg_name created: $sg_id" >&2
+    success "Security group $sg_name created: $sg_id"
     
     echo "$sg_id"
 }
@@ -79,7 +79,13 @@ add_security_group_rules() {
         local source_param
         if [[ "$source" == *"sg"* ]]; then
             # Source is a security group
-            local source_sg_id=$(grep "$source=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+            local source_sg_id=$(grep "${source^^}_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+            if [ -z "$source_sg_id" ]; then
+                echo "DEBUG: Could not find security group ID for $source" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+                echo "DEBUG: Available security groups:" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+                grep "_SG_ID=" "$RESOURCE_IDS_FILE" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+                continue
+            fi
             source_param="--source-group $source_sg_id"
         else
             # Source is CIDR
@@ -190,10 +196,16 @@ create_message_queue_policies() {
         ]
     }'
     
-    aws iam create-policy \
-        --policy-name "$sqs_policy_name" \
-        --policy-document "$sqs_policy_document" \
-        --description "Policy for SQS access" || warning "SQS policy may already exist"
+    # Check if policy already exists
+    local sqs_policy_arn=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$sqs_policy_name'].Arn" --output text 2>/dev/null)
+    if [ -z "$sqs_policy_arn" ] || [ "$sqs_policy_arn" = "None" ]; then
+        aws iam create-policy \
+            --policy-name "$sqs_policy_name" \
+            --policy-document "$sqs_policy_document" \
+            --description "Policy for SQS access" || echo "SQS policy creation failed"
+    else
+        echo "SQS policy already exists: $sqs_policy_arn"
+    fi
     
     # Policy for SNS access
     local sns_policy_name="${project_name}-sns-access"
@@ -212,10 +224,16 @@ create_message_queue_policies() {
         ]
     }'
     
-    aws iam create-policy \
-        --policy-name "$sns_policy_name" \
-        --policy-document "$sns_policy_document" \
-        --description "Policy for SNS access" || warning "SNS policy may already exist"
+    # Check if policy already exists
+    local sns_policy_arn=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$sns_policy_name'].Arn" --output text 2>/dev/null)
+    if [ -z "$sns_policy_arn" ] || [ "$sns_policy_arn" = "None" ]; then
+        aws iam create-policy \
+            --policy-name "$sns_policy_name" \
+            --policy-document "$sns_policy_document" \
+            --description "Policy for SNS access" || echo "SNS policy creation failed"
+    else
+        echo "SNS policy already exists: $sns_policy_arn"
+    fi
     
     success "Message queue IAM policies created"
 }
