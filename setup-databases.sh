@@ -62,25 +62,42 @@ create_db_subnet_group() {
     for ((i=0; i<subnet_count; i++)); do
         local subnet_id=$(grep "SUBNET_${i}_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
         subnet_ids+=("$subnet_id")
+        # Debug: Check subnet details
+        echo "DEBUG: Subnet $i ID: $subnet_id" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        local subnet_az=$(aws ec2 describe-subnets --subnet-ids "$subnet_id" --query 'Subnets[0].AvailabilityZone' --output text 2>/dev/null)
+        echo "DEBUG: Subnet $i AZ: $subnet_az" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
     done
     
-    # Check if DB subnet group already exists
+    # Check if DB subnet group already exists and delete it if using wrong subnets
     local existing_subnet_group=$(aws rds describe-db-subnet-groups \
         --db-subnet-group-name "$subnet_group_name" \
         --query 'DBSubnetGroups[0].DBSubnetGroupName' \
         --output text 2>/dev/null || echo "")
     
     if [ -n "$existing_subnet_group" ] && [ "$existing_subnet_group" != "None" ]; then
-        success "DB subnet group already exists: $subnet_group_name"
-    else
-        # Create DB subnet group
-        aws rds create-db-subnet-group \
+        # Check if existing subnet group uses correct subnets
+        local existing_subnets=$(aws rds describe-db-subnet-groups \
             --db-subnet-group-name "$subnet_group_name" \
-            --db-subnet-group-description "Subnet group for SmartTrip databases" \
-            --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+            --query 'DBSubnetGroups[0].Subnets[].SubnetIdentifier' \
+            --output text 2>/dev/null || echo "")
         
-        success "DB subnet group created: $subnet_group_name"
+        echo "DEBUG: Existing subnet group subnets: $existing_subnets" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        echo "DEBUG: Current VPC subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        
+        # Delete existing subnet group to recreate with correct subnets
+        echo "Deleting existing DB subnet group to use correct subnets..." | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        aws rds delete-db-subnet-group \
+            --db-subnet-group-name "$subnet_group_name" || echo "Failed to delete existing subnet group"
     fi
+    
+    # Create DB subnet group with correct subnets
+    echo "Creating DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    aws rds create-db-subnet-group \
+        --db-subnet-group-name "$subnet_group_name" \
+        --db-subnet-group-description "Subnet group for SmartTrip databases" \
+        --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+    
+    success "DB subnet group created: $subnet_group_name"
     
     echo "DB_SUBNET_GROUP_NAME=$subnet_group_name" >> "$RESOURCE_IDS_FILE"
 }

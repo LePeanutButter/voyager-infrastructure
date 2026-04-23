@@ -29,22 +29,22 @@
   "database": {
     "backend": {
       "identifier": "smarttrip-backend-db",
-      "instance_class": "db.t3.micro",
+      "instance_class": "db.t3.small",
       "engine": "postgres",
       "engine_version": "17.6",
       "storage": 20,
-      "storage_type": "gp2",
+      "storage_type": "gp3",
       "username": "smarttrip_user",
       "password": "SmartTrip2024!",
       "backup_retention": 7
     },
     "ai_service": {
       "identifier": "smarttrip-ai-db", 
-      "instance_class": "db.t3.micro",
+      "instance_class": "db.t3.small",
       "engine": "postgres",
       "engine_version": "17.6",
       "storage": 20,
-      "storage_type": "gp2",
+      "storage_type": "gp3",
       "username": "smarttrip_user",
       "password": "SmartTrip2024!",
       "backup_retention": 7
