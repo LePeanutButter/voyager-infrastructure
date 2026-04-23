@@ -64,14 +64,25 @@ create_db_subnet_group() {
         subnet_ids+=("$subnet_id")
     done
     
-    # Create DB subnet group
-    aws rds create-db-subnet-group \
+    # Check if DB subnet group already exists
+    local existing_subnet_group=$(aws rds describe-db-subnet-groups \
         --db-subnet-group-name "$subnet_group_name" \
-        --db-subnet-group-description "Subnet group for SmartTrip databases" \
-        --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+        --query 'DBSubnetGroups[0].DBSubnetGroupName' \
+        --output text 2>/dev/null || echo "")
+    
+    if [ -n "$existing_subnet_group" ] && [ "$existing_subnet_group" != "None" ]; then
+        success "DB subnet group already exists: $subnet_group_name"
+    else
+        # Create DB subnet group
+        aws rds create-db-subnet-group \
+            --db-subnet-group-name "$subnet_group_name" \
+            --db-subnet-group-description "Subnet group for SmartTrip databases" \
+            --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+        
+        success "DB subnet group created: $subnet_group_name"
+    fi
     
     echo "DB_SUBNET_GROUP_NAME=$subnet_group_name" >> "$RESOURCE_IDS_FILE"
-    success "DB subnet group created: $subnet_group_name"
 }
 
 # Create RDS Instance
