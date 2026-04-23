@@ -21,7 +21,7 @@
       },
       {
         "cidr": "10.0.2.0/24", 
-        "availability_zone": "us-east-1b",
+        "availability_zone": "us-east-1c",
         "name": "public-subnet-2"
       }
     ]
