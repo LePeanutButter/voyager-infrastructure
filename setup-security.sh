@@ -66,6 +66,7 @@ add_security_group_rules() {
     local sg_id="$1"
     local sg_rules="$2"
     
+    echo "DEBUG: sg_id value: '$sg_id'" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
     log "Adding rules to security group $sg_id"
     
     # Parse rules from JSON and add them
@@ -86,12 +87,17 @@ add_security_group_rules() {
         fi
         
         log "Adding rule: $protocol $port from $source"
+        echo "DEBUG: About to call AWS CLI with group-id: '$sg_id'" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        echo "DEBUG: AWS CLI command: aws ec2 authorize-security-group-ingress --group-id '$sg_id' --protocol '$protocol' --port '$port' $source_param" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
         
         aws ec2 authorize-security-group-ingress \
             --group-id "$sg_id" \
             --protocol "$protocol" \
             --port "$port" \
-            $source_param 2>/dev/null || error_exit "Failed to add security group rule"
+            $source_param 2>&1 | tee -a "$SCRIPT_DIR/infrastructure-setup.log" || {
+            echo "DEBUG: AWS CLI failed. Check log for details." | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+            error_exit "Failed to add security group rule"
+        }
     done
     
     success "Security group rules added"
