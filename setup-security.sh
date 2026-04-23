@@ -56,7 +56,7 @@ create_security_group() {
     fi
     
     echo "$sg_key=$sg_id" >> "$RESOURCE_IDS_FILE"
-    success "Security group $sg_name created: $sg_id"
+    success "Security group $sg_name created: $sg_id" >&2
     
     echo "$sg_id"
 }
@@ -80,7 +80,7 @@ add_security_group_rules() {
         if [[ "$source" == *"sg"* ]]; then
             # Source is a security group
             local source_sg_id=$(grep "$source=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-            source_param="--source-group-ids $source_sg_id"
+            source_param="--source-group $source_sg_id"
         else
             # Source is CIDR
             source_param="--cidr $source"
