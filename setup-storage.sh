@@ -99,7 +99,7 @@ configure_static_website() {
         ]
     }'
     
-    echo "$bucket_policy" | aws s3api put-bucket-policy --bucket "$bucket_name" --policy file://- || error_exit "Failed to set bucket policy for: $bucket_name"
+    aws s3api put-bucket-policy --bucket "$bucket_name" --policy "$bucket_policy" || error_exit "Failed to set bucket policy for: $bucket_name"
     
     success "Static website hosting configured for: $bucket_name"
 }
