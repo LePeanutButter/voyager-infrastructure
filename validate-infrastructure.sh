@@ -53,10 +53,11 @@ increment_counters() {
 validate_vpc() {
     log "Validating VPC resources..."
     
-    local vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    local vpc_id vpc_state
+    vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     if [ -n "$vpc_id" ]; then
-        local vpc_state=$(aws ec2 describe-vpcs \
+        vpc_state=$(aws ec2 describe-vpcs \
             --vpc-ids "$vpc_id" \
             --query 'Vpcs[0].State' \
             --output text 2>/dev/null)

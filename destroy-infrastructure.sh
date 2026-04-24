@@ -3,6 +3,7 @@
 # Safely removes all AWS resources created by the setup scripts
 
 set -e
+export AWS_PAGER=""
 
 # Source configuration and utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -313,52 +314,69 @@ destroy_security() {
 # Destroy VPC Resources
 destroy_vpc() {
     log "Destroying VPC resources..."
-    
-    # Delete route tables
-    local rtb_id=$(grep "RTB_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-    if [ -n "$rtb_id" ]; then
-        log "Deleting Route Table: $rtb_id"
-        aws ec2 delete-route-table --route-table-id "$rtb_id" || warning "Failed to delete route table: $rtb_id"
-        success "Route Table deleted"
-    fi
-    
-    # Delete route table associations
-    local subnet_count=$(jq '.vpc.public_subnets | length' "$CONFIG_FILE")
+
+    local rtb_id vpc_id igw_id
+    rtb_id=$(grep "RTB_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    igw_id=$(grep "IGW_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+
+    # 1. Disassociate route table FIRST
+    local subnet_count
+    subnet_count=$(jq '.vpc.public_subnets | length' "$CONFIG_FILE")
     for ((i=0; i<subnet_count; i++)); do
-        local association_id=$(grep "RT_ASSOC_${i}_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+        local association_id
+        association_id=$(grep "RT_ASSOC_${i}_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
         if [ -n "$association_id" ]; then
-            log "Deleting Route Table Association: $association_id"
-            aws ec2 disassociate-route-table --association-id "$association_id" || warning "Failed to delete route table association: $association_id"
+            log "Disassociating Route Table Association: $association_id"
+            aws ec2 disassociate-route-table --association-id "$association_id" || warning "Failed to disassociate: $association_id"
         fi
     done
-    
-    # Delete subnets
+
+    # 2. Now delete the route table
+    if [ -n "$rtb_id" ]; then
+        log "Deleting Route Table: $rtb_id"
+        aws ec2 delete-route-table --route-table-id "$rtb_id" || error_exit "Failed to delete route table: $rtb_id"
+        success "Route Table deleted"
+    fi
+
+    # 3. Delete subnets
     for ((i=0; i<subnet_count; i++)); do
-        local subnet_id=$(grep "SUBNET_${i}_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+        local subnet_id
+        subnet_id=$(grep "SUBNET_${i}_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
         if [ -n "$subnet_id" ]; then
             log "Deleting Subnet: $subnet_id"
             aws ec2 delete-subnet --subnet-id "$subnet_id" || warning "Failed to delete subnet: $subnet_id"
             success "Subnet deleted: $subnet_id"
         fi
     done
-    
-    # Delete Internet Gateway
-    local igw_id=$(grep "IGW_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-    local vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-    
+
+    # 4. Detach and delete IGW
     if [ -n "$igw_id" ] && [ -n "$vpc_id" ]; then
         log "Detaching Internet Gateway: $igw_id"
-        aws ec2 detach-internet-gateway --internet-gateway-id "$igw_id" --vpc-id "$vpc_id" || warning "Failed to detach Internet Gateway"
-        
+        aws ec2 detach-internet-gateway --internet-gateway-id "$igw_id" --vpc-id "$vpc_id" || warning "Failed to detach IGW"
         log "Deleting Internet Gateway: $igw_id"
-        aws ec2 delete-internet-gateway --internet-gateway-id "$igw_id" || warning "Failed to delete Internet Gateway"
+        aws ec2 delete-internet-gateway --internet-gateway-id "$igw_id" || warning "Failed to delete IGW"
         success "Internet Gateway deleted"
     fi
-    
-    # Delete VPC
+
+    # 5. Before deleting VPC, remove any remaining non-default security groups
+    if [ -n "$vpc_id" ]; then
+        log "Cleaning up remaining security groups in VPC..."
+        local remaining_sgs
+        remaining_sgs=$(aws ec2 describe-security-groups \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+            --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+            --output text 2>/dev/null || echo "")
+        for sg in $remaining_sgs; do
+            log "Deleting leftover security group: $sg"
+            aws ec2 delete-security-group --group-id "$sg" || warning "Failed to delete sg: $sg"
+        done
+    fi
+
+    # 6. Delete VPC last
     if [ -n "$vpc_id" ]; then
         log "Deleting VPC: $vpc_id"
-        aws ec2 delete-vpc --vpc-id "$vpc_id" || warning "Failed to delete VPC: $vpc_id"
+        aws ec2 delete-vpc --vpc-id "$vpc_id" || error_exit "Failed to delete VPC: $vpc_id"
         success "VPC deleted: $vpc_id"
     fi
 }

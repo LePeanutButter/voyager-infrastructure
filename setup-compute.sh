@@ -127,7 +127,7 @@ EOF
     
     echo "$template_key=$template_id" >> "$RESOURCE_IDS_FILE"
     echo "${template_key}_NAME=$template_name" >> "$RESOURCE_IDS_FILE"
-    success "Launch template created for $service_name: $template_id"
+    success "Launch template created for $service_name: $template_id" >&2
     
     echo "$template_id"
 }
@@ -213,7 +213,7 @@ create_load_balancer() {
     
     echo "LB_ARN=$lb_arn" >> "$RESOURCE_IDS_FILE"
     echo "LB_NAME=$lb_name" >> "$RESOURCE_IDS_FILE"
-    success "Load Balancer created: $lb_name"
+    success "Load Balancer created: $lb_name" >&2
     
     # Wait for load balancer to be available
     log "Waiting for Load Balancer to become available..."
@@ -245,7 +245,7 @@ create_target_groups() {
         --output text 2>/dev/null)
     
     echo "BACKEND_TG_ARN=$backend_tg_arn" >> "$RESOURCE_IDS_FILE"
-    success "Backend target group created: $backend_tg_name"
+    success "Backend target group created: $backend_tg_name" >&2
     
     # AI service target group
     local ai_tg_name="${project_name}-ai-service-tg"
@@ -263,7 +263,7 @@ create_target_groups() {
         --output text 2>/dev/null)
     
     echo "AI_SERVICE_TG_ARN=$ai_tg_arn" >> "$RESOURCE_IDS_FILE"
-    success "AI service target group created: $ai_tg_name"
+    success "AI service target group created: $ai_tg_name" >&2
     
     echo "$backend_tg_arn $ai_tg_arn"
 }
@@ -271,10 +271,11 @@ create_target_groups() {
 # Create Load Balancer Listeners
 create_listeners() {
     log "Creating load balancer listeners"
-    
-    local lb_arn=$(grep "LB_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local backend_tg_arn=$(grep "BACKEND_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local ai_tg_arn=$(grep "AI_SERVICE_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+
+    local lb_arn backend_tg_arn ai_tg_arn
+    lb_arn=$(grep "LB_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    backend_tg_arn=$(grep "BACKEND_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    ai_tg_arn=$(grep "AI_SERVICE_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Backend listener (port 8080)
     aws elbv2 create-listener \
@@ -298,11 +299,12 @@ create_listeners() {
 # Attach Auto Scaling Groups to Target Groups
 attach_asg_to_target_groups() {
     log "Attaching Auto Scaling Groups to target groups"
-    
-    local backend_asg_name=$(grep "BACKEND_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local ai_service_asg_name=$(grep "AI_SERVICE_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local backend_tg_arn=$(grep "BACKEND_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local ai_service_tg_arn=$(grep "AI_SERVICE_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+
+    local backend_asg_name ai_service_asg_name backend_tg_arn ai_service_tg_arn
+    backend_asg_name=$(grep "BACKEND_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    ai_service_asg_name=$(grep "AI_SERVICE_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    backend_tg_arn=$(grep "BACKEND_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    ai_service_tg_arn=$(grep "AI_SERVICE_TG_ARN=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Attach backend ASG to backend target group
     aws autoscaling attach-load-balancer-target-groups \
@@ -322,32 +324,32 @@ attach_asg_to_target_groups() {
 # Setup Compute Resources
 setup_compute_resources() {
     log "Setting up compute resources..."
-    
-    # Get network and security info
-    local network_info=($(get_network_security_info))
-    local vpc_id="${network_info[0]}"
-    local backend_sg_id="${network_info[1]}"
-    local ai_service_sg_id="${network_info[2]}"
-    
-    # Create launch templates
-    local backend_compute_config=$(jq '.compute.backend' "$CONFIG_FILE")
-    local backend_lt_id=$(create_launch_template "backend" "$backend_compute_config" "$backend_sg_id" "BACKEND_LT_ID")
-    
-    local ai_compute_config=$(jq '.compute.ai_service' "$CONFIG_FILE")
-    local ai_lt_id=$(create_launch_template "ai-service" "$ai_compute_config" "$ai_service_sg_id" "AI_SERVICE_LT_ID")
-    
-    # Create Auto Scaling Groups
-    local backend_asg_name=$(create_auto_scaling_group "backend" "$backend_compute_config" "$backend_lt_id" "BACKEND_ASG_NAME")
-    local ai_service_asg_name=$(create_auto_scaling_group "ai-service" "$ai_compute_config" "$ai_lt_id" "AI_SERVICE_ASG_NAME")
-    
-    # Create load balancer and target groups
-    local lb_arn=$(create_load_balancer)
-    local target_groups=($(create_target_groups))
-    
-    # Create listeners
+
+    local network_info vpc_id backend_sg_id ai_service_sg_id
+    network_info=($(get_network_security_info))
+    vpc_id="${network_info[0]}"
+    backend_sg_id="${network_info[1]}"
+    ai_service_sg_id="${network_info[2]}"
+
+    local backend_compute_config ai_compute_config
+    backend_compute_config=$(jq '.compute.backend' "$CONFIG_FILE")
+    ai_compute_config=$(jq '.compute.ai_service' "$CONFIG_FILE")
+
+    local backend_lt_id ai_lt_id
+    backend_lt_id=$(create_launch_template "backend" "$backend_compute_config" "$backend_sg_id" "BACKEND_LT_ID")
+    ai_lt_id=$(create_launch_template "ai-service" "$ai_compute_config" "$ai_service_sg_id" "AI_SERVICE_LT_ID")
+
+    local backend_asg_name ai_service_asg_name
+    backend_asg_name=$(create_auto_scaling_group "backend" "$backend_compute_config" "$backend_lt_id" "BACKEND_ASG_NAME")
+    ai_service_asg_name=$(create_auto_scaling_group "ai-service" "$ai_compute_config" "$ai_lt_id" "AI_SERVICE_ASG_NAME")
+
+    local lb_arn
+    lb_arn=$(create_load_balancer)
+
+    local target_groups
+    target_groups=($(create_target_groups))
+
     create_listeners
-    
-    # Attach ASGs to target groups
     attach_asg_to_target_groups
 }
 
