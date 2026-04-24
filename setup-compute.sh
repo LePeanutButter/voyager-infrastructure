@@ -151,6 +151,9 @@ create_auto_scaling_group() {
         subnet_ids+=("$subnet_id")
     done
     
+    # Convert subnet array to comma-separated string for AWS CLI
+    local subnet_ids_csv=$(IFS=','; echo "${subnet_ids[*]}")
+    
     local asg_name="${project_name}-${service_name}-asg"
     
     aws autoscaling create-auto-scaling-group \
@@ -159,7 +162,7 @@ create_auto_scaling_group() {
         --min-size "$min_capacity" \
         --max-size "$max_capacity" \
         --desired-capacity "$desired_capacity" \
-        --vpc-zone-identifier "${subnet_ids[@]}" \
+        --vpc-zone-identifier "$subnet_ids_csv" \
         --health-check-type "EC2" \
         --health-check-grace-period 300 \
         --tag "Key=Name,Value=$project_name-$service_name,PropagateAtLaunch=true" \
@@ -186,11 +189,14 @@ create_load_balancer() {
         subnet_ids+=("$subnet_id")
     done
     
+    # Convert subnet array to comma-separated string for AWS CLI
+    local subnet_ids_csv=$(IFS=','; echo "${subnet_ids[*]}")
+    
     local lb_name="${project_name}-alb"
     
     local lb_arn=$(aws elbv2 create-load-balancer \
         --name "$lb_name" \
-        --subnets "${subnet_ids[@]}" \
+        --subnets "$subnet_ids_csv" \
         --security-groups "$(grep "BACKEND_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)" \
         --scheme "internet-facing" \
         --type "application" \
