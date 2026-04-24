@@ -297,54 +297,56 @@ setup_storage_resources() {
 # Validate Storage Setup
 validate_storage_setup() {
     log "Validating storage setup..."
-    
-    # Wait for S3 eventual consistency
     log "Waiting for S3 eventual consistency..."
     sleep 10
-    
-    local frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local media_bucket=$(grep "MEDIA_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local logs_bucket=$(grep "LOGS_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    
-    local region=$(jq -r '.project.region' "$CONFIG_FILE")
 
+    # Declare separately from assignment to avoid set -e masking failures
+    local frontend_bucket media_bucket logs_bucket region
+    frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    media_bucket=$(grep "MEDIA_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    logs_bucket=$(grep "LOGS_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    region=$(jq -r '.project.region' "$CONFIG_FILE")
+
+    # Fail fast if any variable is empty
+    [[ -z "$frontend_bucket" ]] && error_exit "FRONTEND_BUCKET not found in $RESOURCE_IDS_FILE"
+    [[ -z "$media_bucket" ]]   && error_exit "MEDIA_BUCKET not found in $RESOURCE_IDS_FILE"
+    [[ -z "$logs_bucket" ]]    && error_exit "LOGS_BUCKET not found in $RESOURCE_IDS_FILE"
+    [[ -z "$region" ]]         && error_exit "Region not found in $CONFIG_FILE"
+
+    # Check bucket existence
     local frontend_exists media_exists logs_exists
     frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
     media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
     logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    
+
     if [ "$frontend_exists" = "exists" ]; then
         success "Frontend bucket is accessible: $frontend_bucket"
-        
-        # Get website endpoint
-        local website_endpoint=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" --query 'IndexDocument.Suffix' --output text 2>/dev/null || echo "not configured")
-        log "Frontend website endpoint: http://$frontend_bucket.s3-website-us-east-1.amazonaws.com"
+        log "Frontend website endpoint: http://$frontend_bucket.s3-website-$region.amazonaws.com"
     else
         error_exit "Frontend bucket not accessible: $frontend_bucket"
     fi
-    
+
     if [ "$media_exists" = "exists" ]; then
         success "Media bucket is accessible: $media_bucket"
     else
         error_exit "Media bucket not accessible: $media_bucket"
     fi
-    
+
     if [ "$logs_exists" = "exists" ]; then
         success "Logs bucket is accessible: $logs_bucket"
     else
         error_exit "Logs bucket not accessible: $logs_bucket"
     fi
-    
+
     # Check bucket configurations
     log "Verifying bucket configurations..."
-    
+
     local website_config media_encryption logs_encryption
-
     website_config=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "configured" || echo "not configured")
-
     media_encryption=$(aws s3api get-bucket-encryption --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "enabled" || echo "disabled")
-
     logs_encryption=$(aws s3api get-bucket-encryption --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "enabled" || echo "disabled")
+
+    log "Frontend website configuration: $website_config"
     log "Media bucket encryption: $media_encryption"
     log "Logs bucket encryption: $logs_encryption"
 }
