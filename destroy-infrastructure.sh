@@ -101,7 +101,12 @@ destroy_monitoring() {
     local log_groups=($(jq -r '.monitoring.log_groups[]' "$CONFIG_FILE"))
     for log_group in "${log_groups[@]}"; do
         log "Deleting log group: $log_group"
-        aws logs delete-log-group --log-group-name "$log_group" || warning "Failed to delete log group: $log_group"
+        # Check if log group exists before attempting deletion
+        if aws logs describe-log-groups --log-group-name-prefix "$log_group" --query 'logGroups[?logGroupName==`'$log_group'`].logGroupName' --output text 2>/dev/null | grep -q "$log_group"; then
+            aws logs delete-log-group --log-group-name "$log_group" || warning "Failed to delete log group: $log_group"
+        else
+            log "Log group $log_group does not exist, skipping"
+        fi
     done
     success "CloudWatch log groups deleted"
 }
@@ -178,8 +183,12 @@ destroy_storage() {
         if [ -n "$bucket_name" ]; then
             log "Emptying S3 bucket: $bucket_name"
             
-            # Delete all objects
+            # Delete all objects and versions
             aws s3 rm "s3://$bucket_name" --recursive || warning "Failed to empty bucket: $bucket_name"
+            
+            # Delete all versions and delete markers (for versioned buckets)
+            aws s3api delete-objects --bucket "$bucket_name" --delete "$(aws s3api list-object-versions --bucket "$bucket_name" --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null || echo '{"Objects":[]}')" 2>/dev/null || true
+            aws s3api delete-objects --bucket "$bucket_name" --delete "$(aws s3api list-object-versions --bucket "$bucket_name" --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' --output json 2>/dev/null || echo '{"Objects":[]}')" 2>/dev/null || true
             
             # Delete bucket
             aws s3 rb "s3://$bucket_name" || warning "Failed to delete bucket: $bucket_name"
@@ -232,7 +241,13 @@ destroy_compute() {
     local lb_name=$(grep "LB_NAME=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
     if [ -n "$lb_name" ]; then
         log "Deleting Load Balancer: $lb_name"
-        aws elbv2 delete-load-balancer --load-balancer-name "$lb_name" || warning "Failed to delete load balancer: $lb_name"
+        # Get load balancer ARN from name
+        local lb_arn=$(aws elbv2 describe-load-balancers --names "$lb_name" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
+        if [ -n "$lb_arn" ]; then
+            aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" || warning "Failed to delete load balancer: $lb_name"
+        else
+            aws elbv2 delete-load-balancer --name "$lb_name" || warning "Failed to delete load balancer: $lb_name"
+        fi
         success "Load Balancer deleted: $lb_name"
     fi
     
@@ -378,14 +393,14 @@ main() {
     
     log "Starting infrastructure destruction..."
     
-    # Destroy in reverse order of creation
-    destroy_monitoring
-    destroy_networking
-    destroy_storage
-    destroy_compute
-    destroy_databases
-    destroy_security
-    destroy_vpc
+    # Destroy in correct order to handle dependencies
+    destroy_monitoring      # CloudWatch resources
+    destroy_compute        # Auto Scaling Groups, Load Balancers, Launch Templates
+    destroy_networking     # SQS, SNS, API Gateway
+    destroy_storage        # S3 buckets
+    destroy_databases      # RDS instances
+    destroy_security       # Security groups (last before VPC)
+    destroy_vpc            # VPC resources (subnets, route tables, IGW, VPC)
     
     cleanup
     

@@ -46,7 +46,10 @@ get_network_security_info() {
         subnet_ids+=("$subnet_id")
     done
     
-    echo "$vpc_id $backend_sg_id $ai_service_sg_id ${subnet_ids[@]}"
+    # Convert subnet array to comma-separated string
+    local subnet_ids_csv=$(IFS=','; echo "${subnet_ids[*]}")
+    
+    echo "$vpc_id $backend_sg_id $ai_service_sg_id $subnet_ids_csv"
 }
 
 # Create Launch Template
