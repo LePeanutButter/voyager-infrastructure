@@ -174,7 +174,7 @@ create_lifecycle_policy() {
         ]
     }'
     
-    echo "$lifecycle_policy" | aws s3api put-bucket-lifecycle-configuration --bucket "$bucket_name" --lifecycle-configuration file://- || warning "Failed to set lifecycle policy for: $bucket_name"
+    aws s3api put-bucket-lifecycle-configuration --bucket "$bucket_name" --lifecycle-configuration "$lifecycle_policy" || warning "Failed to set lifecycle policy for: $bucket_name"
     
     success "Lifecycle policy created for: $bucket_name"
 }
@@ -211,14 +211,14 @@ setup_storage_resources() {
     aws s3api put-object --bucket "$frontend_bucket" --key "error.html" --body /dev/null --content-type "text/html" || warning "Failed to create error.html placeholder"
     
     # Media bucket structure
-    aws s3api put-object --bucket "$media_bucket" --key "images/" --body /dev/null || warning "Failed to create images directory"
-    aws s3api put-object --bucket "$media_bucket" --key "videos/" --body /dev/null || warning "Failed to create videos directory"
-    aws s3api put-object --bucket "$media_bucket" --key "documents/" --body /dev/null || warning "Failed to create documents directory"
+    aws s3api put-object --bucket "$media_bucket" --key "images/" --content "" || warning "Failed to create images directory"
+    aws s3api put-object --bucket "$media_bucket" --key "videos/" --content "" || warning "Failed to create videos directory"
+    aws s3api put-object --bucket "$media_bucket" --key "documents/" --content "" || warning "Failed to create documents directory"
     
     # Logs bucket structure
-    aws s3api put-object --bucket "$logs_bucket" --key "application/" --body /dev/null || warning "Failed to create application logs directory"
-    aws s3api put-object --bucket "$logs_bucket" --key "infrastructure/" --body /dev/null || warning "Failed to create infrastructure logs directory"
-    aws s3api put-object --bucket "$logs_bucket" --key "access/" --body /dev/null || warning "Failed to create access logs directory"
+    aws s3api put-object --bucket "$logs_bucket" --key "application/" --content "" || warning "Failed to create application logs directory"
+    aws s3api put-object --bucket "$logs_bucket" --key "infrastructure/" --content "" || warning "Failed to create infrastructure logs directory"
+    aws s3api put-object --bucket "$logs_bucket" --key "access/" --content "" || warning "Failed to create access logs directory"
     
     success "Directory structure created in all buckets"
 }
