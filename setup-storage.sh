@@ -315,10 +315,10 @@ validate_storage_setup() {
 
     # Check bucket existence
     local frontend_exists media_exists logs_exists
-    frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-
+    frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null 1>/dev/null && echo "exists" || echo "missing")
+    media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null 1>/dev/null && echo "exists" || echo "missing")
+    logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null 1>/dev/null && echo "exists" || echo "missing")
+    
     if [ "$frontend_exists" = "exists" ]; then
         success "Frontend bucket is accessible: $frontend_bucket"
         log "Frontend website endpoint: http://$frontend_bucket.s3-website-$region.amazonaws.com"
