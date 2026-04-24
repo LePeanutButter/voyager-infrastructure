@@ -300,19 +300,6 @@ validate_storage_setup() {
     log "Waiting for S3 eventual consistency..."
     sleep 10
 
-    # Debug: show raw file contents
-    echo "=== DEBUG: resource-ids.txt contents ==="
-    cat "$RESOURCE_IDS_FILE"
-    echo "=== DEBUG: grep output ==="
-    grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" || echo "grep found nothing"
-    echo "=== DEBUG: cut output ==="
-    grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2 || echo "cut produced nothing"
-    echo "=== DEBUG: variable value ==="
-    echo "'$frontend_bucket'"  # quotes will reveal whitespace/newline issues
-    echo "=== DEBUG: head-bucket raw output ==="
-    aws s3api head-bucket --bucket "$frontend_bucket" --region "$region"
-    echo "=== DEBUG: head-bucket exit code: $?"
-
     # Declare separately from assignment to avoid set -e masking failures
     local frontend_bucket media_bucket logs_bucket region
     frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
@@ -364,29 +351,27 @@ validate_storage_setup() {
     log "Logs bucket encryption: $logs_encryption"
 }
 
-# Main execution
 main() {
     log "Starting storage setup..."
-    
-    # Check if resource IDs file exists
+
     if [ ! -f "$RESOURCE_IDS_FILE" ]; then
         error_exit "Resource IDs file not found. Please run setup-vpc.sh first."
     fi
-    
+
     setup_storage_resources
     validate_storage_setup
-    
+
     success "Storage setup completed successfully!"
-    
-    # Display created resources
+
     echo "=========================================="
     echo "Storage Resources Created:"
     echo "=========================================="
     grep -E "(BUCKET)" "$RESOURCE_IDS_FILE"
     echo "=========================================="
-    
+
     echo "Storage Endpoints:"
-    local frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    local frontend_bucket
+    frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     echo "Frontend Website: http://$frontend_bucket.s3-website-us-east-1.amazonaws.com"
     echo "=========================================="
 }
