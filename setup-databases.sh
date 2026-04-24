@@ -68,7 +68,7 @@ create_db_subnet_group() {
         echo "DEBUG: Subnet $i AZ: $subnet_az" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
     done
     
-    # Check if DB subnet group already exists and delete it if using wrong subnets
+    # Check if DB subnet group already exists and validate it
     local existing_subnet_group=$(aws rds describe-db-subnet-groups \
         --db-subnet-group-name "$subnet_group_name" \
         --query 'DBSubnetGroups[0].DBSubnetGroupName' \
@@ -81,23 +81,46 @@ create_db_subnet_group() {
             --query 'DBSubnetGroups[0].Subnets[].SubnetIdentifier' \
             --output text 2>/dev/null || echo "")
         
-        echo "DEBUG: Existing subnet group subnets: $existing_subnets" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
-        echo "DEBUG: Current VPC subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        echo "DEBUG: Existing subnet group found: $existing_subnet_group" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        echo "DEBUG: Existing subnets: $existing_subnets" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        echo "DEBUG: Required subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
         
-        # Delete existing subnet group to recreate with correct subnets
-        echo "Deleting existing DB subnet group to use correct subnets..." | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
-        aws rds delete-db-subnet-group \
-            --db-subnet-group-name "$subnet_group_name" || echo "Failed to delete existing subnet group"
+        # Check if existing subnets match our required subnets
+        local subnet_match=true
+        for required_subnet in "${subnet_ids[@]}"; do
+            if ! echo "$existing_subnets" | grep -q "$required_subnet"; then
+                subnet_match=false
+                break
+            fi
+        done
+        
+        if [ "$subnet_match" = true ]; then
+            success "DB subnet group already exists with correct subnets: $subnet_group_name"
+        else
+            echo "Updating DB subnet group to use correct subnets..." | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+            # Delete and recreate subnet group with correct subnets
+            aws rds delete-db-subnet-group \
+                --db-subnet-group-name "$subnet_group_name" || echo "Failed to delete existing subnet group"
+            
+            # Create DB subnet group with correct subnets
+            echo "Creating DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+            aws rds create-db-subnet-group \
+                --db-subnet-group-name "$subnet_group_name" \
+                --db-subnet-group-description "Subnet group for SmartTrip databases" \
+                --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+            
+            success "DB subnet group recreated: $subnet_group_name"
+        fi
+    else
+        # Create new DB subnet group
+        echo "Creating new DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+        aws rds create-db-subnet-group \
+            --db-subnet-group-name "$subnet_group_name" \
+            --db-subnet-group-description "Subnet group for SmartTrip databases" \
+            --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
+        
+        success "DB subnet group created: $subnet_group_name"
     fi
-    
-    # Create DB subnet group with correct subnets
-    echo "Creating DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
-    aws rds create-db-subnet-group \
-        --db-subnet-group-name "$subnet_group_name" \
-        --db-subnet-group-description "Subnet group for SmartTrip databases" \
-        --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
-    
-    success "DB subnet group created: $subnet_group_name"
     
     echo "DB_SUBNET_GROUP_NAME=$subnet_group_name" >> "$RESOURCE_IDS_FILE"
 }
