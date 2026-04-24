@@ -82,9 +82,9 @@ setup_infrastructure() {
         "setup-vpc.sh"
         "setup-security.sh" 
         "setup-storage.sh"
+        "setup-compute.sh"
         "setup-networking.sh"
         "setup-monitoring.sh"
-        "setup-compute.sh"
         "setup-databases.sh"
     )
     
