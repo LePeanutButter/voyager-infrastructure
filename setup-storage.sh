@@ -40,9 +40,9 @@ upload_content() {
     local content_type="${4:-}"
     
     if [ -n "$content_type" ]; then
-        echo "$content" | aws s3 cp - "s3://$bucket/$key" --content-type "$content_type"
+        printf '%s' "$content" | aws s3 cp - "s3://$bucket/$key" --content-type "$content_type"
     else
-        echo "$content" | aws s3 cp - "s3://$bucket/$key"
+        printf '%s' "$content" | aws s3 cp - "s3://$bucket/$key"
     fi
 }
 
@@ -50,8 +50,9 @@ upload_content() {
 create_directory() {
     local bucket="$1"
     local key="$2"
+    local region=$(jq -r '.project.region' "$CONFIG_FILE")
     
-    aws s3 cp /dev/null "s3://$bucket/$key"
+    aws s3api put-object --bucket "$bucket" --key "$key" --region "$region" --body ""
 }
 
 # Create S3 Bucket
@@ -85,6 +86,7 @@ create_s3_bucket() {
     # Add tags
     aws s3api put-bucket-tagging \
         --bucket "$bucket_name" \
+        --region "$region" \
         --tagging "TagSet=[{Key=Name,Value=$bucket_name},{Key=Project,Value=$project_name},{Key=Environment,Value=production},{Key=Purpose,Value=$bucket_purpose}]" || warning "Failed to tag bucket: $bucket_name"
     
     echo "$bucket_key=$bucket_name" >> "$RESOURCE_IDS_FILE"
@@ -105,6 +107,7 @@ configure_static_website() {
     # Remove public access block configuration
     aws s3api put-public-access-block \
         --bucket "$bucket_name" \
+        --region "$(jq -r '.project.region' "$CONFIG_FILE")" \
         --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false" || error_exit "Failed to update public access block for: $bucket_name"
     
     # Add bucket policy for public read access
@@ -121,7 +124,7 @@ configure_static_website() {
         ]
     }'
     
-    aws s3api put-bucket-policy --bucket "$bucket_name" --policy "$bucket_policy" || error_exit "Failed to set bucket policy for: $bucket_name"
+    aws s3api put-bucket-policy --bucket "$bucket_name" --region "$(jq -r '.project.region' "$CONFIG_FILE")" --policy "$bucket_policy" || error_exit "Failed to set bucket policy for: $bucket_name"
     
     success "Static website hosting configured for: $bucket_name"
 }
@@ -136,18 +139,21 @@ configure_private_storage() {
     # Ensure public access is blocked for private buckets
     aws s3api put-public-access-block \
         --bucket "$bucket_name" \
+        --region "$(jq -r '.project.region' "$CONFIG_FILE")" \
         --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=false,BlockPublicPolicy=true,RestrictPublicBuckets=true" || error_exit "Failed to update public access block for: $bucket_name"
     
     # Enable versioning for important buckets
     if [ "$bucket_purpose" = "logs" ] || [ "$bucket_purpose" = "media" ]; then
         aws s3api put-bucket-versioning \
             --bucket "$bucket_name" \
+            --region "$(jq -r '.project.region' "$CONFIG_FILE")" \
             --versioning-configuration Status=Enabled || warning "Failed to enable versioning for: $bucket_name"
     fi
     
     # Enable server-side encryption
     aws s3api put-bucket-encryption \
         --bucket "$bucket_name" \
+        --region "$(jq -r '.project.region' "$CONFIG_FILE")" \
         --server-side-encryption-configuration '{
             "Rules": [
                 {
@@ -196,7 +202,7 @@ create_lifecycle_policy() {
         ]
     }'
     
-    aws s3api put-bucket-lifecycle-configuration --bucket "$bucket_name" --lifecycle-configuration "$lifecycle_policy" || warning "Failed to set lifecycle policy for: $bucket_name"
+    aws s3api put-bucket-lifecycle-configuration --bucket "$bucket_name" --region "$(jq -r '.project.region' "$CONFIG_FILE")" --lifecycle-configuration "$lifecycle_policy" || warning "Failed to set lifecycle policy for: $bucket_name"
     
     success "Lifecycle policy created for: $bucket_name"
 }
@@ -284,6 +290,10 @@ setup_storage_resources() {
 validate_storage_setup() {
     log "Validating storage setup..."
     
+    # Wait for S3 eventual consistency
+    log "Waiting for S3 eventual consistency..."
+    sleep 5
+    
     local frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local media_bucket=$(grep "MEDIA_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local logs_bucket=$(grep "LOGS_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
@@ -297,7 +307,7 @@ validate_storage_setup() {
         success "Frontend bucket is accessible: $frontend_bucket"
         
         # Get website endpoint
-        local website_endpoint=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --query 'IndexDocument.Suffix' --output text 2>/dev/null || echo "not configured")
+        local website_endpoint=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" --query 'IndexDocument.Suffix' --output text 2>/dev/null || echo "not configured")
         log "Frontend website endpoint: http://$frontend_bucket.s3-website-us-east-1.amazonaws.com"
     else
         error_exit "Frontend bucket not accessible: $frontend_bucket"
@@ -319,12 +329,12 @@ validate_storage_setup() {
     log "Verifying bucket configurations..."
     
     # Check frontend bucket website configuration
-    local website_config=$(aws s3api get-bucket-website --bucket "$frontend_bucket" 2>/dev/null && echo "configured" || echo "not configured")
+    local website_config=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "configured" || echo "not configured")
     log "Frontend website configuration: $website_config"
     
     # Check encryption for private buckets
-    local media_encryption=$(aws s3api get-bucket-encryption --bucket "$media_bucket" 2>/dev/null && echo "enabled" || echo "disabled")
-    local logs_encryption=$(aws s3api get-bucket-encryption --bucket "$logs_bucket" 2>/dev/null && echo "enabled" || echo "disabled")
+    local media_encryption=$(aws s3api get-bucket-encryption --bucket "$media_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "enabled" || echo "disabled")
+    local logs_encryption=$(aws s3api get-bucket-encryption --bucket "$logs_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "enabled" || echo "disabled")
     log "Media bucket encryption: $media_encryption"
     log "Logs bucket encryption: $logs_encryption"
 }
