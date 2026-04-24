@@ -207,18 +207,18 @@ setup_storage_resources() {
     log "Creating directory structure in buckets..."
     
     # Frontend bucket structure
-    aws s3api put-object --bucket "$frontend_bucket" --key "index.html" --body /dev/null --content-type "text/html" || warning "Failed to create index.html placeholder"
-    aws s3api put-object --bucket "$frontend_bucket" --key "error.html" --body /dev/null --content-type "text/html" || warning "Failed to create error.html placeholder"
+    echo "<html><body>Placeholder</body></html>" | aws s3api put-object --bucket "$frontend_bucket" --key "index.html" --body file://- --content-type "text/html" || warning "Failed to create index.html placeholder"
+    echo "<html><body>Error page</body></html>" | aws s3api put-object --bucket "$frontend_bucket" --key "error.html" --body file://- --content-type "text/html" || warning "Failed to create error.html placeholder"
     
     # Media bucket structure
-    aws s3api put-object --bucket "$media_bucket" --key "images/" --content "" || warning "Failed to create images directory"
-    aws s3api put-object --bucket "$media_bucket" --key "videos/" --content "" || warning "Failed to create videos directory"
-    aws s3api put-object --bucket "$media_bucket" --key "documents/" --content "" || warning "Failed to create documents directory"
+    echo "" | aws s3api put-object --bucket "$media_bucket" --key "images/" --body file://- || warning "Failed to create images directory"
+    echo "" | aws s3api put-object --bucket "$media_bucket" --key "videos/" --body file://- || warning "Failed to create videos directory"
+    echo "" | aws s3api put-object --bucket "$media_bucket" --key "documents/" --body file://- || warning "Failed to create documents directory"
     
     # Logs bucket structure
-    aws s3api put-object --bucket "$logs_bucket" --key "application/" --content "" || warning "Failed to create application logs directory"
-    aws s3api put-object --bucket "$logs_bucket" --key "infrastructure/" --content "" || warning "Failed to create infrastructure logs directory"
-    aws s3api put-object --bucket "$logs_bucket" --key "access/" --content "" || warning "Failed to create access logs directory"
+    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "application/" --body file://- || warning "Failed to create application logs directory"
+    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "infrastructure/" --body file://- || warning "Failed to create infrastructure logs directory"
+    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "access/" --body file://- || warning "Failed to create access logs directory"
     
     success "Directory structure created in all buckets"
 }
