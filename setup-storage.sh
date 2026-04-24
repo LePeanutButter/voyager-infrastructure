@@ -54,7 +54,13 @@ create_directory() {
     local key="$2"
     local region=$(jq -r '.project.region' "$CONFIG_FILE")
     
-    aws s3api put-object --bucket "$bucket" --key "$key" --region "$region" --body /dev/null
+    local temp_file=$(mktemp)
+    trap "rm -f '$temp_file'" EXIT
+    
+    aws s3api put-object --bucket "$bucket" --key "$key" --region "$region" --body "$temp_file"
+    
+    rm -f "$temp_file"
+    trap - EXIT
 }
 
 # Create S3 Bucket
@@ -302,9 +308,9 @@ validate_storage_setup() {
     
     # Check bucket existence
     local region=$(jq -r '.project.region' "$CONFIG_FILE")
-    local frontend_exists=$(aws s3 ls "s3://$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    local media_exists=$(aws s3 ls "s3://$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    local logs_exists=$(aws s3 ls "s3://$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    local frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    local media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    local logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
     
     if [ "$frontend_exists" = "exists" ]; then
         success "Frontend bucket is accessible: $frontend_bucket"
