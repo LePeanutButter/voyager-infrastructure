@@ -37,13 +37,15 @@ upload_content() {
     local bucket="$1"
     local key="$2"
     local content="$3"
-    local content_type="${4:-}"
+    local content_type="${4:-text/plain}"
     
-    if [ -n "$content_type" ]; then
-        printf '%s' "$content" | aws s3 cp - "s3://$bucket/$key" --content-type "$content_type"
-    else
-        printf '%s' "$content" | aws s3 cp - "s3://$bucket/$key"
-    fi
+    local temp_file=$(mktemp)
+    trap "rm -f '$temp_file'" EXIT
+    
+    echo "$content" > "$temp_file"
+    aws s3 cp "$temp_file" "s3://$bucket/$key" --content-type "$content_type"
+    rm -f "$temp_file"
+    trap - EXIT
 }
 
 # Helper function to create S3 directory (empty object)
@@ -52,7 +54,7 @@ create_directory() {
     local key="$2"
     local region=$(jq -r '.project.region' "$CONFIG_FILE")
     
-    aws s3api put-object --bucket "$bucket" --key "$key" --region "$region" --body ""
+    aws s3api put-object --bucket "$bucket" --key "$key" --region "$region" --body /dev/null
 }
 
 # Create S3 Bucket
@@ -111,18 +113,18 @@ configure_static_website() {
         --public-access-block-configuration "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false" || error_exit "Failed to update public access block for: $bucket_name"
     
     # Add bucket policy for public read access
-    local bucket_policy='{
-        "Version": "2012-10-17",
-        "Statement": [
+    local bucket_policy="{
+        \"Version\": \"2012-10-17\",
+        \"Statement\": [
             {
-                "Sid": "PublicReadGetObject",
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": "s3:GetObject",
-                "Resource": "arn:aws:s3:::'$bucket_name'/*"
+                \"Sid\": \"PublicReadGetObject\",
+                \"Effect\": \"Allow\",
+                \"Principal\": \"*\",
+                \"Action\": \"s3:GetObject\",
+                \"Resource\": \"arn:aws:s3:::${bucket_name}/*\"
             }
         ]
-    }'
+    }"
     
     aws s3api put-bucket-policy --bucket "$bucket_name" --region "$(jq -r '.project.region' "$CONFIG_FILE")" --policy "$bucket_policy" || error_exit "Failed to set bucket policy for: $bucket_name"
     
@@ -292,16 +294,17 @@ validate_storage_setup() {
     
     # Wait for S3 eventual consistency
     log "Waiting for S3 eventual consistency..."
-    sleep 5
+    sleep 10
     
     local frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local media_bucket=$(grep "MEDIA_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local logs_bucket=$(grep "LOGS_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Check bucket existence
-    local frontend_exists=$(aws s3 ls "s3://$frontend_bucket" 2>/dev/null && echo "exists" || echo "missing")
-    local media_exists=$(aws s3 ls "s3://$media_bucket" 2>/dev/null && echo "exists" || echo "missing")
-    local logs_exists=$(aws s3 ls "s3://$logs_bucket" 2>/dev/null && echo "exists" || echo "missing")
+    local region=$(jq -r '.project.region' "$CONFIG_FILE")
+    local frontend_exists=$(aws s3 ls "s3://$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    local media_exists=$(aws s3 ls "s3://$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    local logs_exists=$(aws s3 ls "s3://$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
     
     if [ "$frontend_exists" = "exists" ]; then
         success "Frontend bucket is accessible: $frontend_bucket"
