@@ -306,11 +306,12 @@ validate_storage_setup() {
     local media_bucket=$(grep "MEDIA_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local logs_bucket=$(grep "LOGS_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
-    # Check bucket existence
     local region=$(jq -r '.project.region' "$CONFIG_FILE")
-    local frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    local media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
-    local logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+
+    local frontend_exists media_exists logs_exists
+    frontend_exists=$(aws s3api head-bucket --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    media_exists=$(aws s3api head-bucket --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
+    logs_exists=$(aws s3api head-bucket --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "exists" || echo "missing")
     
     if [ "$frontend_exists" = "exists" ]; then
         success "Frontend bucket is accessible: $frontend_bucket"
@@ -337,13 +338,13 @@ validate_storage_setup() {
     # Check bucket configurations
     log "Verifying bucket configurations..."
     
-    # Check frontend bucket website configuration
-    local website_config=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "configured" || echo "not configured")
-    log "Frontend website configuration: $website_config"
-    
-    # Check encryption for private buckets
-    local media_encryption=$(aws s3api get-bucket-encryption --bucket "$media_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "enabled" || echo "disabled")
-    local logs_encryption=$(aws s3api get-bucket-encryption --bucket "$logs_bucket" --region "$(jq -r '.project.region' "$CONFIG_FILE")" 2>/dev/null && echo "enabled" || echo "disabled")
+    local website_config media_encryption logs_encryption
+
+    website_config=$(aws s3api get-bucket-website --bucket "$frontend_bucket" --region "$region" 2>/dev/null && echo "configured" || echo "not configured")
+
+    media_encryption=$(aws s3api get-bucket-encryption --bucket "$media_bucket" --region "$region" 2>/dev/null && echo "enabled" || echo "disabled")
+
+    logs_encryption=$(aws s3api get-bucket-encryption --bucket "$logs_bucket" --region "$region" 2>/dev/null && echo "enabled" || echo "disabled")
     log "Media bucket encryption: $media_encryption"
     log "Logs bucket encryption: $logs_encryption"
 }
