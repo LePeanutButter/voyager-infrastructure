@@ -13,7 +13,7 @@ RESOURCE_IDS_FILE="$SCRIPT_DIR/resource-ids.txt"
 
 # Logging function
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Validation - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "$(date "+%Y-%m-%d %H:%M:%S") - Validation - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
 }
 
 # Error handling
