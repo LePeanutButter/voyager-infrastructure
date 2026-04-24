@@ -56,7 +56,7 @@
       "min_capacity": 1,
       "max_capacity": 3,
       "desired_capacity": 2,
-      "ami": "ami-0c55b159cbfafe1f0",
+      "ami": "ami-0c02fb55956c7d316",
       "key_name": "smarttrip-key"
     },
     "ai_service": {
@@ -64,7 +64,7 @@
       "min_capacity": 1,
       "max_capacity": 2,
       "desired_capacity": 1,
-      "ami": "ami-0c55b159cbfafe1f0",
+      "ami": "ami-0c02fb55956c7d316",
       "key_name": "smarttrip-key"
     }
   },
