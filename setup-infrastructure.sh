@@ -77,15 +77,15 @@ load_config() {
 setup_infrastructure() {
     log "Starting SmartTrip infrastructure setup..."
     
-    # Execute setup scripts in order
+    # Execute setup scripts in optimized order (fast components first)
     local scripts=(
         "setup-vpc.sh"
         "setup-security.sh" 
-        "setup-databases.sh"
-        "setup-compute.sh"
         "setup-storage.sh"
         "setup-networking.sh"
         "setup-monitoring.sh"
+        "setup-compute.sh"
+        "setup-databases.sh"
     )
     
     for script in "${scripts[@]}"; do
