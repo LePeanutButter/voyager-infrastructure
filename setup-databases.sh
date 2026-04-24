@@ -13,23 +13,23 @@ RESOURCE_IDS_FILE="$SCRIPT_DIR/resource-ids.txt"
 
 # Logging function
 log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Database Setup - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Database Setup - $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
 # Error handling
 error_exit() {
-    echo "ERROR: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "ERROR: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
     exit 1
 }
 
 # Success message
 success() {
-    echo "SUCCESS: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "SUCCESS: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
 # Warning message
 warning() {
-    echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+    echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
 # Get VPC ID and subnet IDs
