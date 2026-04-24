@@ -110,7 +110,7 @@ create_api_methods() {
     local ai_service_resource_id=$(grep "AI_SERVICE_RESOURCE_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Get load balancer DNS name
-    local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" | cut -d' -f2 || echo "")
+    local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" | awk -F': ' '{print $2}' || echo "")
     if [ -z "$lb_dns" ]; then
         error_exit "Load Balancer DNS not found. Please run setup-compute.sh first."
     fi

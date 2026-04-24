@@ -1,8 +1,8 @@
 #!/bin/bash
-# Storage Setup Script for SmartTrip Infrastructure
-# Creates S3 buckets for frontend, media, and logs storage
+# SmartTrip Storage Setup Script
+# This script provisions S3 buckets and storage resources using AWS CLI commands
 
-set -e
+set -euo pipefail  # Exit on any error, undefined variables, and pipe failures
 
 # Source configuration and utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +30,28 @@ success() {
 # Warning message
 warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
+}
+
+# Helper function to upload content to S3
+upload_content() {
+    local bucket="$1"
+    local key="$2"
+    local content="$3"
+    local content_type="${4:-}"
+    
+    if [ -n "$content_type" ]; then
+        echo "$content" | aws s3 cp - "s3://$bucket/$key" --content-type "$content_type"
+    else
+        echo "$content" | aws s3 cp - "s3://$bucket/$key"
+    fi
+}
+
+# Helper function to create S3 directory (empty object)
+create_directory() {
+    local bucket="$1"
+    local key="$2"
+    
+    aws s3 cp /dev/null "s3://$bucket/$key"
 }
 
 # Create S3 Bucket
@@ -206,21 +228,56 @@ setup_storage_resources() {
     # Create sample directory structure
     log "Creating directory structure in buckets..."
     
+    local failed=0
+    
     # Frontend bucket structure
-    echo "<html><body>Placeholder</body></html>" | aws s3api put-object --bucket "$frontend_bucket" --key "index.html" --body file://- --content-type "text/html" || warning "Failed to create index.html placeholder"
-    echo "<html><body>Error page</body></html>" | aws s3api put-object --bucket "$frontend_bucket" --key "error.html" --body file://- --content-type "text/html" || warning "Failed to create error.html placeholder"
+    if ! upload_content "$frontend_bucket" "index.html" "<html><body>Placeholder</body></html>" "text/html"; then
+        warning "Failed to create index.html placeholder"
+        failed=1
+    fi
+    
+    if ! upload_content "$frontend_bucket" "error.html" "<html><body>Error page</body></html>" "text/html"; then
+        warning "Failed to create error.html placeholder"
+        failed=1
+    fi
     
     # Media bucket structure
-    echo "" | aws s3api put-object --bucket "$media_bucket" --key "images/" --body file://- || warning "Failed to create images directory"
-    echo "" | aws s3api put-object --bucket "$media_bucket" --key "videos/" --body file://- || warning "Failed to create videos directory"
-    echo "" | aws s3api put-object --bucket "$media_bucket" --key "documents/" --body file://- || warning "Failed to create documents directory"
+    if ! create_directory "$media_bucket" "images/"; then
+        warning "Failed to create images directory"
+        failed=1
+    fi
+    
+    if ! create_directory "$media_bucket" "videos/"; then
+        warning "Failed to create videos directory"
+        failed=1
+    fi
+    
+    if ! create_directory "$media_bucket" "documents/"; then
+        warning "Failed to create documents directory"
+        failed=1
+    fi
     
     # Logs bucket structure
-    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "application/" --body file://- || warning "Failed to create application logs directory"
-    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "infrastructure/" --body file://- || warning "Failed to create infrastructure logs directory"
-    echo "" | aws s3api put-object --bucket "$logs_bucket" --key "access/" --body file://- || warning "Failed to create access logs directory"
+    if ! create_directory "$logs_bucket" "application/"; then
+        warning "Failed to create application logs directory"
+        failed=1
+    fi
     
-    success "Directory structure created in all buckets"
+    if ! create_directory "$logs_bucket" "infrastructure/"; then
+        warning "Failed to create infrastructure logs directory"
+        failed=1
+    fi
+    
+    if ! create_directory "$logs_bucket" "access/"; then
+        warning "Failed to create access logs directory"
+        failed=1
+    fi
+    
+    if [ $failed -eq 0 ]; then
+        success "Directory structure created in all buckets"
+    else
+        warning "Some directory structure creation failed"
+    fi
 }
 
 # Validate Storage Setup
