@@ -300,6 +300,19 @@ validate_storage_setup() {
     log "Waiting for S3 eventual consistency..."
     sleep 10
 
+    # Debug: show raw file contents
+    echo "=== DEBUG: resource-ids.txt contents ==="
+    cat "$RESOURCE_IDS_FILE"
+    echo "=== DEBUG: grep output ==="
+    grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" || echo "grep found nothing"
+    echo "=== DEBUG: cut output ==="
+    grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2 || echo "cut produced nothing"
+    echo "=== DEBUG: variable value ==="
+    echo "'$frontend_bucket'"  # quotes will reveal whitespace/newline issues
+    echo "=== DEBUG: head-bucket raw output ==="
+    aws s3api head-bucket --bucket "$frontend_bucket" --region "$region"
+    echo "=== DEBUG: head-bucket exit code: $?"
+
     # Declare separately from assignment to avoid set -e masking failures
     local frontend_bucket media_bucket logs_bucket region
     frontend_bucket=$(grep "FRONTEND_BUCKET=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
