@@ -391,7 +391,7 @@ destroy_vpc() {
         local enis
         enis=$(aws ec2 describe-network-interfaces \
             --filters "Name=vpc-id,Values=$vpc_id" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' \
+            --query 'NetworkInterfaces[?Status!=`in-use`].NetworkInterfaceId' \
             --output text 2>/dev/null || echo "")
         for eni in $enis; do
             log "Deleting network interface: $eni"

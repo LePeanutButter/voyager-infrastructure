@@ -3,6 +3,7 @@
 # Creates EC2 instances, Auto Scaling Groups, and load balancers
 
 set -e
+export AWS_PAGER=""
 
 # Source configuration and utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -302,48 +303,48 @@ create_auto_scaling_group() {
 # Create Load Balancer
 create_load_balancer() {
     log "Creating Application Load Balancer"
-    
-    local project_name=$(jq -r '.project.name' "$CONFIG_FILE")
-    
-    # Get subnet IDs
+
+    local project_name
+    project_name=$(jq -r '.project.name' "$CONFIG_FILE")
+
+    # Get subnet IDs as an array
     local subnet_ids=()
-    local subnet_count=$(jq '.vpc.public_subnets | length' "$CONFIG_FILE")
+    local subnet_count
+    subnet_count=$(jq '.vpc.public_subnets | length' "$CONFIG_FILE")
     for ((i=0; i<subnet_count; i++)); do
-        local subnet_id=$(grep "SUBNET_${i}_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+        local subnet_id
+        subnet_id=$(grep "SUBNET_${i}_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
         subnet_ids+=("$subnet_id")
     done
-    
-    # Convert subnet array to comma-separated string for AWS CLI
-    local subnet_ids_csv=$(IFS=','; echo "${subnet_ids[*]}")
-    
+
     local lb_name="${project_name}-alb"
-    
-    # Get security group IDs
-    local backend_sg_id=$(grep "BACKEND_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local ai_service_sg_id=$(grep "AI_SERVICE_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    
-    local lb_arn=$(aws elbv2 create-load-balancer \
+    local backend_sg_id
+    local ai_service_sg_id
+    backend_sg_id=$(grep "BACKEND_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    ai_service_sg_id=$(grep "AI_SERVICE_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+
+    local lb_arn
+    lb_arn=$(aws elbv2 create-load-balancer \
         --name "$lb_name" \
-        --subnets "$subnet_ids_csv" \
+        --subnets "${subnet_ids[@]}" \
         --security-groups "$backend_sg_id" "$ai_service_sg_id" \
         --scheme "internet-facing" \
         --type "application" \
         --ip-address-type "ipv4" \
         --query 'LoadBalancers[0].LoadBalancerArn' \
-        --output text 2>/dev/null)
-    
-    if [ $? -ne 0 ] || [ -z "$lb_arn" ]; then
+        --output text)
+
+    if [ -z "$lb_arn" ]; then
         error_exit "Failed to create Load Balancer"
     fi
-    
+
     echo "LB_ARN=$lb_arn" >> "$RESOURCE_IDS_FILE"
     echo "LB_NAME=$lb_name" >> "$RESOURCE_IDS_FILE"
-    success "Load Balancer created: $lb_name" >&2
-    
-    # Wait for load balancer to be available
+    success "Load Balancer created: $lb_name"
+
     log "Waiting for Load Balancer to become available..."
     aws elbv2 wait load-balancer-available --load-balancer-arns "$lb_arn"
-    
+
     echo "$lb_arn"
 }
 
