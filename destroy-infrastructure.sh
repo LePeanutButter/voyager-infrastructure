@@ -237,9 +237,7 @@ destroy_compute() {
                 --min-size 0 \
                 --max-size 0 || warning "Failed to update ASG capacity"
             
-            # Wait for instances to terminate
-            aws autoscaling wait group-in-service \
-                --auto-scaling-group-names "$asg_name" || warning "ASG wait timeout"
+            # Wait for instances to terminate (removed wait command since we force delete)
             
             # Delete ASG
             aws autoscaling delete-auto-scaling-group \
@@ -457,6 +455,18 @@ destroy_vpc() {
     fi
 }
 
+# Clean up EC2 key pairs
+cleanup_key_pairs() {
+    log "Cleaning up EC2 key pairs..."
+    
+    local key_names
+    key_names=($(jq -r '.compute | to_entries[].value.key_name' "$CONFIG_FILE" 2>/dev/null | sort -u | grep -v null))
+    
+    for key_name in "${key_names[@]}"; do
+        delete_key_pair "$key_name"
+    done
+}
+
 # Cleanup
 cleanup() {
     log "Cleaning up..."
@@ -468,17 +478,6 @@ cleanup() {
     fi
     
     # Clean up EC2 key pairs
-cleanup_key_pairs() {
-    log "Cleaning up EC2 key pairs..."
-    
-    local key_names=($(jq -r '.compute | to_entries | map_values(.key_name) | .[]' "$CONFIG_FILE"))
-    
-    for key_name in "${key_names[@]}"; do
-        delete_key_pair "$key_name"
-    done
-}
-
-# Clean up EC2 key pairs
     cleanup_key_pairs
     
     # Remove log files (optional)
