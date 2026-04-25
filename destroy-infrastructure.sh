@@ -384,8 +384,59 @@ destroy_vpc() {
         success "Internet Gateway deleted"
     fi
 
-    # 5. Before deleting VPC, remove any remaining non-default security groups
+    # 5. Before deleting VPC, clean up all remaining dependencies
     if [ -n "$vpc_id" ]; then
+        log "Cleaning up remaining VPC dependencies..."
+        
+        # Delete any remaining network interfaces
+        log "Deleting network interfaces..."
+        local enis
+        enis=$(aws ec2 describe-network-interfaces \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+            --query 'NetworkInterfaces[].NetworkInterfaceId' \
+            --output text 2>/dev/null || echo "")
+        for eni in $enis; do
+            log "Deleting network interface: $eni"
+            aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || log "Failed to delete ENI: $eni"
+        done
+        
+        # Delete any remaining NAT gateways
+        log "Deleting NAT gateways..."
+        local nat_gws
+        nat_gws=$(aws ec2 describe-nat-gateways \
+            --filter "Name=vpc-id,Values=$vpc_id" \
+            --query 'NatGateways[].NatGatewayId' \
+            --output text 2>/dev/null || echo "")
+        for nat in $nat_gws; do
+            log "Deleting NAT gateway: $nat"
+            aws ec2 delete-nat-gateway --nat-gateway-id "$nat" 2>/dev/null || log "Failed to delete NAT: $nat"
+        done
+        
+        # Delete any remaining Elastic IPs
+        log "Deleting Elastic IPs..."
+        local eips
+        eips=$(aws ec2 describe-addresses \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+            --query 'Addresses[].AllocationId' \
+            --output text 2>/dev/null || echo "")
+        for eip in $eips; do
+            log "Releasing Elastic IP: $eip"
+            aws ec2 release-address --allocation-id "$eip" 2>/dev/null || log "Failed to release EIP: $eip"
+        done
+        
+        # Force delete remaining subnets with dependencies
+        log "Force deleting remaining subnets..."
+        local remaining_subnets
+        remaining_subnets=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+            --query 'Subnets[].SubnetId' \
+            --output text 2>/dev/null || echo "")
+        for subnet in $remaining_subnets; do
+            log "Force deleting subnet: $subnet"
+            aws ec2 delete-subnet --subnet-id "$subnet" 2>/dev/null || warning "Failed to delete subnet: $subnet"
+        done
+        
+        # Clean up remaining security groups
         log "Cleaning up remaining security groups in VPC..."
         local remaining_sgs
         remaining_sgs=$(aws ec2 describe-security-groups \
@@ -433,9 +484,28 @@ cleanup_key_pairs() {
     # Remove log files (optional)
     read -p "Remove log files? (yes/no): " remove_logs
     if [ "$remove_logs" = "yes" ]; then
+        # Remove main log files
         rm -f "$SCRIPT_DIR/infrastructure-setup.log"
         rm -f "$SCRIPT_DIR/infrastructure-destroy.log"
-        success "Log files removed"
+        
+        # Remove all timestamped setup logs
+        rm -f "$SCRIPT_DIR/infrastructure-setup-*.log"
+        
+        # Remove all timestamped destroy logs
+        rm -f "$SCRIPT_DIR/infrastructure-destroy-*.log"
+        
+        # Remove any other log files
+        rm -f "$SCRIPT_DIR/*.log"
+        
+        success "All log files removed"
+        
+        # Remove local key files
+        log "Removing local key files..."
+        local key_name=$(jq -r '.compute.backend.key_name' "$CONFIG_FILE" 2>/dev/null || echo "smarttrip-key")
+        rm -f "$SCRIPT_DIR/${key_name}.pem"
+        rm -f "$SCRIPT_DIR/smarttrip-key.pem"
+        rm -f "$SCRIPT_DIR/*.pem"
+        success "Local key files removed"
     fi
 }
 
