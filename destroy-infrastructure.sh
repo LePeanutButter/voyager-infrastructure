@@ -391,6 +391,20 @@ cleanup() {
         success "Resource IDs file removed"
     fi
     
+    # Clean up EC2 key pairs
+cleanup_key_pairs() {
+    log "Cleaning up EC2 key pairs..."
+    
+    local key_names=($(jq -r '.compute | to_entries | map_values(.key_name) | .[]' "$CONFIG_FILE"))
+    
+    for key_name in "${key_names[@]}"; do
+        delete_key_pair "$key_name"
+    done
+}
+
+# Clean up EC2 key pairs
+    cleanup_key_pairs
+    
     # Remove log files (optional)
     read -p "Remove log files? (yes/no): " remove_logs
     if [ "$remove_logs" = "yes" ]; then

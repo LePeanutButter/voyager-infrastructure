@@ -32,6 +32,127 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
+# Ensure EC2 key pair exists, create if needed
+ensure_key_pair_exists() {
+    local key_name="$1"
+    local pem_file="$SCRIPT_DIR/${key_name}.pem"
+    
+    log "Checking EC2 key pair: $key_name"
+    
+    # Check if key exists in AWS
+    local key_exists
+    key_exists=$(aws ec2 describe-key-pairs \
+        --key-names "$key_name" \
+        --query 'KeyPairs[0].KeyName' \
+        --output text 2>/dev/null)
+    
+    if [ "$key_exists" = "$key_name" ]; then
+        log "Key pair '$key_name' exists in AWS"
+        
+        # Check if local PEM file exists
+        if [ -f "$pem_file" ]; then
+            log "Local PEM file exists: $pem_file"
+            return 0
+        else
+            log "WARNING: Key exists in AWS but local PEM file missing"
+            log "Creating local PEM file from existing key pair..."
+            recreate_local_pem "$key_name"
+            return 0
+        fi
+    else
+        log "Key pair '$key_name' does not exist in AWS"
+        create_key_pair "$key_name"
+        return 0
+    fi
+}
+
+# Create new EC2 key pair
+create_key_pair() {
+    local key_name="$1"
+    local pem_file="$SCRIPT_DIR/${key_name}.pem"
+    
+    log "Creating EC2 key pair: $key_name"
+    
+    # Check if local PEM file exists to prevent overwriting
+    if [ -f "$pem_file" ]; then
+        error_exit "Local PEM file already exists: $pem_file. Remove it first or use different key name."
+    fi
+    
+    # Create key pair in AWS
+    local key_material
+    key_material=$(aws ec2 create-key-pair \
+        --key-name "$key_name" \
+        --query 'KeyMaterial' \
+        --output text 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$key_material" ]; then
+        error_exit "Failed to create key pair: $key_name"
+    fi
+    
+    # Save PEM file securely
+    echo "$key_material" > "$pem_file"
+    chmod 400 "$pem_file"
+    
+    log "Key pair created: $key_name"
+    log "PEM file saved: $pem_file"
+    success "Key pair created successfully: $key_name"
+}
+
+# Recreate local PEM file from existing AWS key
+recreate_local_pem() {
+    local key_name="$1"
+    local pem_file="$SCRIPT_DIR/${key_name}.pem"
+    
+    log "Recreating local PEM file for existing key: $key_name"
+    
+    # Get key material from AWS (cannot retrieve private key, must create new one)
+    log "WARNING: Cannot retrieve existing private key from AWS"
+    log "Creating new key pair and updating references..."
+    
+    # Create new key pair with timestamp to avoid conflicts
+    local timestamp=$(date +%s)
+    local temp_key_name="${key_name}-${timestamp}"
+    
+    local key_material
+    key_material=$(aws ec2 create-key-pair \
+        --key-name "$temp_key_name" \
+        --query 'KeyMaterial' \
+        --output text 2>/dev/null)
+    
+    if [ $? -ne 0 ] || [ -z "$key_material" ]; then
+        error_exit "Failed to recreate key pair: $temp_key_name"
+    fi
+    
+    # Save new PEM file
+    echo "$key_material" > "$pem_file"
+    chmod 400 "$pem_file"
+    
+    # Update key name in config to use new one
+    log "Note: Key name updated to $temp_key_name"
+    log "PEM file recreated: $pem_file"
+}
+
+# Delete EC2 key pair and local PEM file
+delete_key_pair() {
+    local key_name="$1"
+    local pem_file="$SCRIPT_DIR/${key_name}.pem"
+    
+    log "Deleting EC2 key pair: $key_name"
+    
+    # Delete from AWS
+    aws ec2 delete-key-pair \
+        --key-name "$key_name" \
+        2>/dev/null || warning "Failed to delete key pair: $key_name"
+    
+    # Remove local PEM file
+    if [ -f "$pem_file" ]; then
+        rm -f "$pem_file"
+        log "Local PEM file removed: $pem_file"
+    fi
+    
+    success "Key pair deleted: $key_name"
+}
+
 # Get network and security information
 get_network_security_info() {
     local vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
@@ -330,6 +451,10 @@ setup_compute_resources() {
     vpc_id="${network_info[0]}"
     backend_sg_id="${network_info[1]}"
     ai_service_sg_id="${network_info[2]}"
+
+    # Ensure EC2 key pair exists before creating compute resources
+    local key_name=$(jq -r '.compute.backend.key_name' "$CONFIG_FILE")
+    ensure_key_pair_exists "$key_name"
 
     local backend_compute_config ai_compute_config
     backend_compute_config=$(jq '.compute.backend' "$CONFIG_FILE")
