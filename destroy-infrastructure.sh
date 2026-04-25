@@ -33,6 +33,27 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-destroy.log"
 }
 
+# Delete EC2 key pair and local PEM file
+delete_key_pair() {
+    local key_name="$1"
+    local pem_file="$SCRIPT_DIR/${key_name}.pem"
+    
+    log "Deleting EC2 key pair: $key_name"
+    
+    # Delete from AWS
+    aws ec2 delete-key-pair \
+        --key-name "$key_name" \
+        2>/dev/null || warning "Failed to delete key pair: $key_name"
+    
+    # Remove local PEM file
+    if [ -f "$pem_file" ]; then
+        rm -f "$pem_file"
+        log "Local PEM file removed: $pem_file"
+    fi
+    
+    success "Key pair deleted: $key_name"
+}
+
 # Confirmation prompt
 confirm_destruction() {
     echo "=========================================="
