@@ -318,10 +318,14 @@ create_load_balancer() {
     
     local lb_name="${project_name}-alb"
     
+    # Get security group IDs
+    local backend_sg_id=$(grep "BACKEND_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    local ai_service_sg_id=$(grep "AI_SERVICE_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    
     local lb_arn=$(aws elbv2 create-load-balancer \
         --name "$lb_name" \
         --subnets "$subnet_ids_csv" \
-        --security-groups "$(grep "BACKEND_SG_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)" \
+        --security-groups "$backend_sg_id" "$ai_service_sg_id" \
         --scheme "internet-facing" \
         --type "application" \
         --ip-address-type "ipv4" \

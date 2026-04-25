@@ -238,7 +238,7 @@ destroy_compute() {
                 --max-size 0 || warning "Failed to update ASG capacity"
             
             # Wait for instances to terminate
-            aws autoscaling wait auto-scaling-group-in-service \
+            aws autoscaling wait group-in-service \
                 --auto-scaling-group-names "$asg_name" || warning "ASG wait timeout"
             
             # Delete ASG
@@ -249,13 +249,14 @@ destroy_compute() {
         fi
     done
     
-    # Delete Target Groups
+    # Delete Target Groups first (must be deleted before LB)
     local target_groups=("BACKEND_TG_ARN" "AI_SERVICE_TG_ARN")
     for tg_key in "${target_groups[@]}"; do
         local tg_arn=$(grep "$tg_key=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
         if [ -n "$tg_arn" ]; then
             log "Deleting Target Group: $tg_arn"
             aws elbv2 delete-target-group --target-group-arn "$tg_arn" || warning "Failed to delete target group: $tg_arn"
+            success "Target Group deleted: $tg_arn"
         fi
     done
     
@@ -267,6 +268,9 @@ destroy_compute() {
         local lb_arn=$(aws elbv2 describe-load-balancers --names "$lb_name" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
         if [ -n "$lb_arn" ]; then
             aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" || warning "Failed to delete load balancer: $lb_name"
+            # Wait for load balancer to be fully deleted
+            log "Waiting for Load Balancer to be deleted..."
+            aws elbv2 wait load-balancer-deleted --load-balancer-arns "$lb_arn" 2>/dev/null || log "Load balancer deletion timeout"
         else
             aws elbv2 delete-load-balancer --name "$lb_name" || warning "Failed to delete load balancer: $lb_name"
         fi
