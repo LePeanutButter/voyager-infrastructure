@@ -39,12 +39,12 @@ ensure_key_pair_exists() {
     
     log "Checking EC2 key pair: $key_name"
     
-    # Check if key exists in AWS
+    # Check if key exists in AWS (handle errors properly)
     local key_exists
     key_exists=$(aws ec2 describe-key-pairs \
         --key-names "$key_name" \
         --query 'KeyPairs[0].KeyName' \
-        --output text 2>/dev/null)
+        --output text 2>/dev/null || echo "NOT_FOUND")
     
     if [ "$key_exists" = "$key_name" ]; then
         log "Key pair '$key_name' exists in AWS"
