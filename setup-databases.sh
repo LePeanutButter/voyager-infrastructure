@@ -154,6 +154,12 @@ wait_for_rds_available() {
             return 0
         fi
 
+        case "$status" in
+            error|failed|incompatible-parameters|incompatible-network|incompatible-option-group|incompatible-restore|insufficient-capacity|storage-full|stopped|stop-failed|restore-error)
+                error_exit "RDS $identifier en estado terminal: $status"
+                ;;
+        esac
+
         attempt=$((attempt + 1))
         log "RDS $identifier estado: $status (intento $attempt/$max_attempts)"
         sleep "$interval"
@@ -271,40 +277,36 @@ setup_databases() {
     local backend_db_config=$(jq '.database.backend' "$CONFIG_FILE")
     local ai_db_config=$(jq '.database.ai_service' "$CONFIG_FILE")
     
-    # Launch both databases in parallel
-    log "Launching both RDS instances in parallel..."
-    
-    # Start backend database creation in background
-    (
-        log "Starting backend database creation..."
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        log "LocalStack: creando instancias RDS en serie (evita conflictos al paralelizar motores PostgreSQL)."
         create_rds_instance "$backend_db_config" "BACKEND_DB_ID"
-        echo "BACKEND_DB_COMPLETED" > "$SCRIPT_DIR/backend_db_status.tmp"
-    ) &
-    local backend_pid=$!
-    
-    # Start AI service database creation in background
-    (
-        log "Starting AI service database creation..."
         create_rds_instance "$ai_db_config" "AI_SERVICE_DB_ID"
-        echo "AI_SERVICE_DB_COMPLETED" > "$SCRIPT_DIR/ai_service_db_status.tmp"
-    ) &
-    local ai_service_pid=$!
-    
-    # Wait for both databases to complete
-    log "Waiting for both databases to complete creation..."
-    wait $backend_pid
-    local backend_exit_code=$?
-    wait $ai_service_pid
-    local ai_service_exit_code=$?
-    
-    # Clean up temporary files
-    rm -f "$SCRIPT_DIR/backend_db_status.tmp" "$SCRIPT_DIR/ai_service_db_status.tmp"
-    
-    # Check if both databases were created successfully
-    if [ $backend_exit_code -eq 0 ] && [ $ai_service_exit_code -eq 0 ]; then
-        success "Both databases created successfully in parallel"
+        success "Ambas bases RDS creadas correctamente (serie)"
     else
-        error_exit "One or more database creation failed"
+        log "Launching both RDS instances in parallel..."
+        (
+            log "Starting backend database creation..."
+            create_rds_instance "$backend_db_config" "BACKEND_DB_ID"
+        ) &
+        local backend_pid=$!
+
+        (
+            log "Starting AI service database creation..."
+            create_rds_instance "$ai_db_config" "AI_SERVICE_DB_ID"
+        ) &
+        local ai_service_pid=$!
+
+        log "Waiting for both databases to complete creation..."
+        wait $backend_pid
+        local backend_exit_code=$?
+        wait $ai_service_pid
+        local ai_service_exit_code=$?
+
+        if [ $backend_exit_code -eq 0 ] && [ $ai_service_exit_code -eq 0 ]; then
+            success "Both databases created successfully in parallel"
+        else
+            error_exit "One or more database creation failed"
+        fi
     fi
 }
 

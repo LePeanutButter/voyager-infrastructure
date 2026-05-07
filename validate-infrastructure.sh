@@ -48,6 +48,59 @@ aws_rds() {
     fi
 }
 
+# Normalize numeric AWS CLI output (e.g. JMESPath null → "None") for safe test comparisons
+aws_cli_int() {
+    case "${1:-}" in
+        ''|None|null|NONE) echo 0 ;;
+        *[!0-9]*) echo 0 ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Read RDS endpoint from resource-ids (${identifier}_ENDPOINT=...)
+db_endpoint_for_identifier() {
+    local identifier="$1"
+    [ -z "$identifier" ] && echo "" && return
+    grep "^${identifier}_ENDPOINT=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2-
+}
+
+# ASG: zero instances is common on LocalStack; on real AWS it usually indicates a problem.
+validate_asg_running_instances() {
+    local asg_name="$1"
+    local label="$2"
+
+    local ag_count
+    ag_count=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'length(AutoScalingGroups)' \
+        --output text 2>/dev/null || echo "0")
+    ag_count=$(aws_cli_int "$ag_count")
+
+    if [ "$ag_count" -eq 0 ]; then
+        warning "$label ASG not found: $asg_name"
+        increment_counters "FAIL"
+        return
+    fi
+
+    local cnt
+    cnt=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names "$asg_name" \
+        --query 'AutoScalingGroups[0].Instances | length(@)' \
+        --output text 2>/dev/null || echo "0")
+    cnt=$(aws_cli_int "$cnt")
+
+    if [ "$cnt" -gt 0 ]; then
+        success "$label ASG has $cnt running instances"
+        increment_counters "PASS"
+    elif [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        warning "$label ASG has no running instances (acceptable on LocalStack / emulator)"
+        increment_counters "PASS"
+    else
+        warning "$label ASG has no running instances"
+        increment_counters "FAIL"
+    fi
+}
+
 # Validation counters
 TOTAL_CHECKS=0
 PASSED_CHECKS=0
@@ -177,7 +230,8 @@ validate_databases() {
             --output text 2>/dev/null)
         
         if [ "$db_status" = "available" ]; then
-            local db_endpoint=$(grep "BACKEND_DB_ENDPOINT=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+            local db_endpoint
+            db_endpoint=$(db_endpoint_for_identifier "$backend_db_id")
             success "Backend database is available: $backend_db_id ($db_endpoint)"
             increment_counters "PASS"
         else
@@ -195,7 +249,8 @@ validate_databases() {
             --output text 2>/dev/null)
         
         if [ "$db_status" = "available" ]; then
-            local db_endpoint=$(grep "AI_SERVICE_DB_ENDPOINT=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+            local db_endpoint
+            db_endpoint=$(db_endpoint_for_identifier "$ai_service_db_id")
             success "AI service database is available: $ai_service_db_id ($db_endpoint)"
             increment_counters "PASS"
         else
@@ -233,35 +288,13 @@ validate_compute() {
     # Backend Auto Scaling Group
     local backend_asg_name=$(grep "BACKEND_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     if [ -n "$backend_asg_name" ]; then
-        local asg_instances=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names "$backend_asg_name" \
-            --query 'AutoScalingGroups[0].Instances | length' \
-            --output text 2>/dev/null)
-        
-        if [ "$asg_instances" -gt 0 ]; then
-            success "Backend ASG has $asg_instances instances"
-            increment_counters "PASS"
-        else
-            warning "Backend ASG has no instances"
-            increment_counters "FAIL"
-        fi
+        validate_asg_running_instances "$backend_asg_name" "Backend"
     fi
     
     # AI Service Auto Scaling Group
     local ai_service_asg_name=$(grep "AI_SERVICE_ASG_NAME=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     if [ -n "$ai_service_asg_name" ]; then
-        local asg_instances=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names "$ai_service_asg_name" \
-            --query 'AutoScalingGroups[0].Instances | length' \
-            --output text 2>/dev/null)
-        
-        if [ "$asg_instances" -gt 0 ]; then
-            success "AI Service ASG has $asg_instances instances"
-            increment_counters "PASS"
-        else
-            warning "AI Service ASG has no instances"
-            increment_counters "FAIL"
-        fi
+        validate_asg_running_instances "$ai_service_asg_name" "AI Service"
     fi
 }
 
@@ -450,8 +483,9 @@ generate_report() {
         echo "AI Service Database: $ai_service_db_id"
     fi
     
-    # Load Balancer
-    local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d':' -f2)
+    # Load Balancer (valor puede ser URL con ':', no usar cut por ':')
+    local lb_dns=""
+    lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" 2>/dev/null | sed -n 's/^.*Load Balancer DNS:[[:space:]]*//p')
     if [ -n "$lb_dns" ]; then
         echo "Load Balancer: $lb_dns"
     fi
@@ -494,15 +528,28 @@ generate_report() {
     echo "Database Connections:"
     echo "------------------------------------------"
     
-    local backend_db_endpoint=$(grep "BACKEND_DB_ENDPOINT=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-    local ai_service_db_endpoint=$(grep "AI_SERVICE_DB_ENDPOINT=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    local backend_db_id ai_service_db_id backend_db_endpoint ai_service_db_endpoint backend_db_port ai_service_db_port
+    backend_db_id=$(grep "BACKEND_DB_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    ai_service_db_id=$(grep "AI_SERVICE_DB_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    backend_db_endpoint=""
+    ai_service_db_endpoint=""
+    backend_db_port=""
+    ai_service_db_port=""
+    if [ -n "$backend_db_id" ]; then
+        backend_db_endpoint=$(db_endpoint_for_identifier "$backend_db_id")
+        backend_db_port=$(grep "^${backend_db_id}_PORT=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    fi
+    if [ -n "$ai_service_db_id" ]; then
+        ai_service_db_endpoint=$(db_endpoint_for_identifier "$ai_service_db_id")
+        ai_service_db_port=$(grep "^${ai_service_db_id}_PORT=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    fi
     
     if [ -n "$backend_db_endpoint" ]; then
-        echo "Backend DB: $backend_db_endpoint:5432"
+        echo "Backend DB: ${backend_db_endpoint}:${backend_db_port:-5432}"
     fi
     
     if [ -n "$ai_service_db_endpoint" ]; then
-        echo "AI Service DB: $ai_service_db_endpoint:5432"
+        echo "AI Service DB: ${ai_service_db_endpoint}:${ai_service_db_port:-5432}"
     fi
     
     echo "=========================================="

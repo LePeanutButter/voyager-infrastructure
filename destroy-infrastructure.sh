@@ -49,6 +49,56 @@ aws_rds() {
     fi
 }
 
+# ASG --force-delete no espera a que las instancias terminen; quedan ENIs en uso y bloquean subnets, SG y VPC.
+terminate_project_ec2_and_wait() {
+    local vpc_id="$1"
+    local project_name="$2"
+    local ids="" extra_ids="" merged="" iid
+
+    if [ -n "$vpc_id" ] && [ "$vpc_id" != "None" ]; then
+        ids=$(aws ec2 describe-instances \
+            --filters "Name=vpc-id,Values=$vpc_id" \
+                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$project_name" ] && [ "$project_name" != "null" ] && [ -n "$project_name" ]; then
+        extra_ids=$(aws ec2 describe-instances \
+            --filters "Name=tag:Project,Values=$project_name" \
+                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text 2>/dev/null || echo "")
+    fi
+
+    merged=$(echo "$ids $extra_ids" | tr '\t' ' ' | tr -s ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')
+
+    if [ -n "$merged" ]; then
+        log "Terminating EC2 instances still running: $merged"
+        # shellcheck disable=SC2086
+        aws ec2 terminate-instances --instance-ids $merged 2>/dev/null || warning "Some terminate-instances could not be sent"
+    fi
+
+    if [ -n "$vpc_id" ] && [ "$vpc_id" != "None" ]; then
+        log "Waiting for instances in VPC $vpc_id to finish (up to ~5 min)..."
+        local n=0 busy=""
+        while [ "$n" -lt 60 ]; do
+            busy=$(aws ec2 describe-instances \
+                --filters "Name=vpc-id,Values=$vpc_id" \
+                    "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped" \
+                --query 'Reservations[].Instances[].InstanceId' \
+                --output text 2>/dev/null || echo "")
+            busy=$(echo "$busy" | tr -d '[:space:]')
+            if [ -z "$busy" ]; then
+                return 0
+            fi
+            sleep 5
+            n=$((n + 1))
+        done
+        warning "Timeout waiting for instances in VPC; subnets or ENIs may still be blocked"
+    fi
+}
+
 # Delete EC2 key pair and local PEM file
 delete_key_pair() {
     local key_name="$1"
@@ -123,7 +173,8 @@ destroy_monitoring() {
         --output text 2>/dev/null || echo "")
     
     if [ -n "$alarms" ]; then
-        echo "$alarms" | while read -r alarm; do
+        # --output text devuelve varios AlarmName separados por tabuladores: hay que iterar por palabra.
+        for alarm in $alarms; do
             if [ -n "$alarm" ]; then
                 log "Deleting alarm: $alarm"
                 aws cloudwatch delete-alarms --alarm-names "$alarm" || warning "Failed to delete alarm: $alarm"
@@ -202,14 +253,19 @@ destroy_networking() {
     local api_id=$(grep "API_GATEWAY_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
     if [ -n "$api_id" ]; then
         log "Deleting API Gateway: $api_id"
-        
-        # Delete deployment
-        local deployment_id=$(grep "API_DEPLOYMENT_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-        if [ -n "$deployment_id" ]; then
-            aws apigateway delete-deployment --rest-api-id "$api_id" --deployment-id "$deployment_id" || warning "Failed to delete API deployment"
+
+        local stage_name deployment_id
+        stage_name=$(grep "API_STAGE_NAME=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+        deployment_id=$(grep "API_DEPLOYMENT_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+
+        # El stage referencia el deployment; hay que borrar el stage antes del deployment (API Gateway real y LocalStack).
+        if [ -n "$stage_name" ]; then
+            aws apigateway delete-stage --rest-api-id "$api_id" --stage-name "$stage_name" 2>/dev/null || warning "Failed to delete API stage: $stage_name"
         fi
-        
-        # Delete REST API
+        if [ -n "$deployment_id" ]; then
+            aws apigateway delete-deployment --rest-api-id "$api_id" --deployment-id "$deployment_id" 2>/dev/null || warning "Failed to delete API deployment"
+        fi
+
         aws apigateway delete-rest-api --rest-api-id "$api_id" || warning "Failed to delete API Gateway"
         success "API Gateway deleted"
     fi
@@ -290,6 +346,10 @@ destroy_compute() {
                 --force-delete 2>/dev/null || warning "Failed to delete orphaned ASG: $orphan_asg"
         fi
     done
+
+    local vpc_cleanup_id
+    vpc_cleanup_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    terminate_project_ec2_and_wait "$vpc_cleanup_id" "$project_name"
 
     # Cualquier ALB del proyecto (LocalStack puede dejar varios ARNs; hay que quitar listeners antes del TG)
     log "Deleting ELBv2 load balancers matching project '$project_name'..."
@@ -410,6 +470,119 @@ destroy_security() {
     # Note: LabRole and LabInstanceProfile are not deleted as they are Academy Lab resources
 }
 
+# Elimina una VPC y dependencias usando solo el ID (VPCs huérfanas sin resource-ids o de ejecuciones anteriores).
+destroy_single_vpc_aggressive() {
+    local target_vpc="$1"
+    local project_name="$2"
+
+    [ -z "$target_vpc" ] || [ "$target_vpc" = "None" ] && return 0
+
+    local exists
+    exists=$(aws ec2 describe-vpcs --vpc-ids "$target_vpc" --query 'length(Vpcs)' --output text 2>/dev/null || echo "0")
+    if [ "$exists" = "0" ] || [ -z "$exists" ]; then
+        return 0
+    fi
+
+    log "Limpieza profunda de VPC: $target_vpc"
+    terminate_project_ec2_and_wait "$target_vpc" "$project_name"
+
+    local rtb assocs a
+    for rtb in $(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$target_vpc" --query 'RouteTables[].RouteTableId' --output text 2>/dev/null); do
+        [ -z "$rtb" ] && continue
+        assocs=$(aws ec2 describe-route-tables --route-table-ids "$rtb" --query 'RouteTables[0].Associations[?SubnetId!=`null`].RouteTableAssociationId' --output text 2>/dev/null || echo "")
+        for a in $assocs; do
+            aws ec2 disassociate-route-table --association-id "$a" 2>/dev/null || true
+        done
+    done
+
+    for rtb in $(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$target_vpc" --query 'RouteTables[].RouteTableId' --output text 2>/dev/null); do
+        [ -z "$rtb" ] && continue
+        local has_main
+        has_main=$(aws ec2 describe-route-tables --route-table-ids "$rtb" --query 'length(RouteTables[0].Associations[?Main==`true`])' --output text 2>/dev/null || echo "0")
+        if [ "${has_main:-0}" != "0" ]; then
+            continue
+        fi
+        aws ec2 delete-route-table --route-table-id "$rtb" 2>/dev/null || warning "No se pudo borrar route table $rtb"
+    done
+
+    local igw
+    for igw in $(aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$target_vpc" --query 'InternetGateways[].InternetGatewayId' --output text 2>/dev/null); do
+        [ -z "$igw" ] && continue
+        aws ec2 detach-internet-gateway --internet-gateway-id "$igw" --vpc-id "$target_vpc" 2>/dev/null || true
+        aws ec2 delete-internet-gateway --internet-gateway-id "$igw" 2>/dev/null || true
+    done
+
+    local nat
+    for nat in $(aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$target_vpc" --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null); do
+        [ -z "$nat" ] && continue
+        aws ec2 delete-nat-gateway --nat-gateway-id "$nat" 2>/dev/null || true
+    done
+
+    local eip
+    for eip in $(aws ec2 describe-addresses --filters "Name=vpc-id,Values=$target_vpc" --query 'Addresses[].AllocationId' --output text 2>/dev/null); do
+        [ -z "$eip" ] && continue
+        aws ec2 release-address --allocation-id "$eip" 2>/dev/null || true
+    done
+
+    log "Eliminando ENIs en $target_vpc..."
+    local eni
+    for eni in $(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$target_vpc" --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null); do
+        [ -z "$eni" ] && continue
+        aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
+    done
+
+    local sn
+    for sn in $(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$target_vpc" --query 'Subnets[].SubnetId' --output text 2>/dev/null); do
+        [ -z "$sn" ] && continue
+        aws ec2 delete-subnet --subnet-id "$sn" 2>/dev/null || warning "No se pudo eliminar subnet $sn"
+    done
+
+    local p sg sgs
+    for p in 1 2 3 4 5 6; do
+        sgs=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$target_vpc" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null || echo "")
+        sgs=$(echo "$sgs" | tr -d '[:space:]')
+        if [ -z "$sgs" ]; then
+            break
+        fi
+        for sg in $(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$target_vpc" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null); do
+            [ -z "$sg" ] && continue
+            aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
+        done
+    done
+
+    if aws ec2 delete-vpc --vpc-id "$target_vpc" 2>/dev/null; then
+        success "VPC eliminada: $target_vpc"
+    else
+        warning "No se pudo eliminar VPC $target_vpc (revisa dependencias en la consola)"
+    fi
+}
+
+# VPCs del proyecto que no estaban en resource-ids (fallos previos, LocalStack, otra sesión).
+destroy_orphan_project_vpcs() {
+    local project_name project_cidr
+    project_name=$(jq -r '.project.name' "$CONFIG_FILE")
+    project_cidr=$(jq -r '.vpc.cidr' "$CONFIG_FILE")
+    [ -z "$project_name" ] || [ "$project_name" = "null" ] && return 0
+
+    log "Buscando VPCs huérfanas del proyecto (tag Project=$project_name o CIDR=$project_cidr)..."
+
+    local seen="" vid
+
+    for vid in $(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=$project_name" --query 'Vpcs[?IsDefault==`false`].VpcId' --output text 2>/dev/null); do
+        case " $seen " in *" $vid "*) continue ;; esac
+        destroy_single_vpc_aggressive "$vid" "$project_name"
+        seen="$seen $vid"
+    done
+
+    if [ -n "$project_cidr" ] && [ "$project_cidr" != "null" ]; then
+        for vid in $(aws ec2 describe-vpcs --filters "Name=cidr-block-association.cidr-block,Values=$project_cidr" --query 'Vpcs[?IsDefault==`false`].VpcId' --output text 2>/dev/null); do
+            case " $seen " in *" $vid "*) continue ;; esac
+            destroy_single_vpc_aggressive "$vid" "$project_name"
+            seen="$seen $vid"
+        done
+    fi
+}
+
 # Destroy VPC Resources
 destroy_vpc() {
     log "Destroying VPC resources..."
@@ -418,6 +591,10 @@ destroy_vpc() {
     rtb_id=$(grep "RTB_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
     vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
     igw_id=$(grep "IGW_ID=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+
+    local project_for_vpc
+    project_for_vpc=$(jq -r '.project.name' "$CONFIG_FILE")
+    terminate_project_ec2_and_wait "$vpc_id" "$project_for_vpc"
 
     # 1. Disassociate route table FIRST
     local subnet_count
@@ -598,8 +775,9 @@ main() {
     destroy_storage        # S3 buckets
     destroy_databases      # RDS instances
     destroy_security       # Security groups + IAM policies SmartTrip
-    destroy_vpc            # VPC resources (subnets, route tables, IGW, VPC)
-    
+    destroy_vpc                       # VPC según resource-ids
+    destroy_orphan_project_vpcs       # VPCs del mismo proyecto/CIDR sin IDs guardados
+
     trap - EXIT
     finalize_local_after_aws
     
