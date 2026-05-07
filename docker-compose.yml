@@ -1,0 +1,51 @@
+# LocalStack (Docker Compose).
+# Por defecto: Pro (`LOCALSTACK_IMAGE` en `.env`, típicamente localstack/localstack-pro + LOCALSTACK_AUTH_TOKEN).
+# Community: LOCALSTACK_IMAGE=localstack/localstack y puedes omitir el token.
+#
+# Depuración (lo que sueles mirar en vivo):
+#   - Logs del contenedor: docker compose logs -f localstack
+#   - Log unificado de scripts: voyager-infrastructure/infrastructure-setup.log
+#     PowerShell: Get-Content .\voyager-infrastructure\infrastructure-setup.log -Wait -Tail 80
+# Docs: https://docs.localstack.cloud/aws/getting-started/installation/#docker-compose
+#
+# Arranque: desde esta carpeta, `docker compose up -d`
+#
+# AWS CLI / SDK desde tu máquina:
+#   export AWS_ACCESS_KEY_ID=test
+#   export AWS_SECRET_ACCESS_KEY=test
+#   export AWS_DEFAULT_REGION=us-east-1
+#   aws --endpoint-url=http://localhost:4566 <comando>
+#
+# Servicios en Docker (back / IA / front): usa la red `overtheair_local` y como endpoint
+#   http://localstack-main:4566 (o el nombre que pongas en LOCALSTACK_DOCKER_NAME).
+#
+# voyager-infrastructure: la carpeta del repo se monta en el contenedor en /workspace/voyager-infrastructure
+#   para poder ejecutar scripts con `docker exec -it localstack-main bash` y `cd /workspace/voyager-infrastructure`.
+#   (Alternativa: ejecutar los mismos scripts en el host con AWS_ENDPOINT_URL=http://127.0.0.1:4566.)
+#
+services:
+  localstack:
+    container_name: "${LOCALSTACK_DOCKER_NAME:-localstack-main}"
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack-pro}
+    ports:
+      - "127.0.0.1:4566:4566" # gateway
+      - "127.0.0.1:4510-4559:4510-4559" # servicios externos
+      - "127.0.0.1:443:443" # HTTPS gateway (Pro)
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
+      - DEBUG=${DEBUG:-0}
+      - PERSISTENCE=${PERSISTENCE:-0}
+      # Descomenta para limitar servicios y acelerar el arranque:
+      # - SERVICES=s3,dynamodb,sqs,sns,lambda,secretsmanager,ssm
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./localstack-volume}:/var/lib/localstack"
+      - ".:/workspace/voyager-infrastructure"
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - overtheair_local
+
+networks:
+  overtheair_local:
+    name: overtheair_local
+    driver: bridge
