@@ -33,6 +33,22 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-destroy.log"
 }
 
+aws_sqs() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" sqs "$@"
+    else
+        aws sqs "$@"
+    fi
+}
+
+aws_rds() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" rds "$@"
+    else
+        aws rds "$@"
+    fi
+}
+
 # Delete EC2 key pair and local PEM file
 delete_key_pair() {
     local key_name="$1"
@@ -63,7 +79,12 @@ confirm_destruction() {
     echo "=========================================="
     echo "This action cannot be undone!"
     echo ""
-    read -p "Are you sure you want to continue? (yes/no): " confirm
+    if [ "${DESTROY_ASSUME_YES:-}" = "1" ]; then
+        confirm="yes"
+        echo "DESTROY_ASSUME_YES=1 — continuando sin prompt interactivo."
+    else
+        read -r -p "Are you sure you want to continue? (yes/no): " confirm || confirm="no"
+    fi
     
     if [ "$confirm" != "yes" ]; then
         echo "Destruction cancelled by user"
@@ -84,7 +105,7 @@ check_dependencies() {
     fi
     
     if [ ! -f "$RESOURCE_IDS_FILE" ]; then
-        error_exit "Resource IDs file not found. Cannot safely destroy infrastructure."
+        warning "resource-ids.txt no encontrado: el borrado en AWS por IDs será limitado; al final se limpiará el workspace local igualmente."
     fi
     
     success "Dependencies check passed"
@@ -172,7 +193,7 @@ destroy_networking() {
         local queue_url=$(grep "$queue_key=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
         if [ -n "$queue_url" ]; then
             log "Deleting SQS queue: $queue_url"
-            aws sqs delete-queue --queue-url "$queue_url" || warning "Failed to delete SQS queue: $queue_url"
+            aws_sqs delete-queue --queue-url "$queue_url" || warning "Failed to delete SQS queue: $queue_url"
         fi
     done
     success "SQS queues deleted"
@@ -246,34 +267,72 @@ destroy_compute() {
             success "Auto Scaling Group deleted: $asg_name"
         fi
     done
-    
-    # Delete Target Groups first (must be deleted before LB)
-    local target_groups=("BACKEND_TG_ARN" "AI_SERVICE_TG_ARN")
-    for tg_key in "${target_groups[@]}"; do
-        local tg_arn=$(grep "$tg_key=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-        if [ -n "$tg_arn" ]; then
-            log "Deleting Target Group: $tg_arn"
-            aws elbv2 delete-target-group --target-group-arn "$tg_arn" || warning "Failed to delete target group: $tg_arn"
-            success "Target Group deleted: $tg_arn"
+
+    local project_name
+    project_name=$(jq -r '.project.name' "$CONFIG_FILE")
+
+    # ASG por nombre (restos si resource-ids incompleto o ejecución previa fallida)
+    for orphan_asg in "${project_name}-backend-asg" "${project_name}-ai-service-asg"; do
+        local exists
+        exists=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$orphan_asg" \
+            --query 'AutoScalingGroups[0].AutoScalingGroupName' \
+            --output text 2>/dev/null || echo "")
+        if [ -n "$exists" ] && [ "$exists" != "None" ]; then
+            log "Deleting orphaned Auto Scaling Group: $orphan_asg"
+            aws autoscaling update-auto-scaling-group \
+                --auto-scaling-group-name "$orphan_asg" \
+                --desired-capacity 0 \
+                --min-size 0 \
+                --max-size 0 2>/dev/null || true
+            aws autoscaling delete-auto-scaling-group \
+                --auto-scaling-group-name "$orphan_asg" \
+                --force-delete 2>/dev/null || warning "Failed to delete orphaned ASG: $orphan_asg"
         fi
     done
-    
-    # Delete Load Balancer
-    local lb_name=$(grep "LB_NAME=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
-    if [ -n "$lb_name" ]; then
-        log "Deleting Load Balancer: $lb_name"
-        # Get load balancer ARN from name
-        local lb_arn=$(aws elbv2 describe-load-balancers --names "$lb_name" --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
-        if [ -n "$lb_arn" ]; then
-            aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" || warning "Failed to delete load balancer: $lb_name"
-            # Wait for load balancer to be fully deleted
-            log "Waiting for Load Balancer to be deleted..."
-            aws elbv2 wait load-balancer-deleted --load-balancer-arns "$lb_arn" 2>/dev/null || log "Load balancer deletion timeout"
-        else
-            aws elbv2 delete-load-balancer --name "$lb_name" || warning "Failed to delete load balancer: $lb_name"
+
+    # Cualquier ALB del proyecto (LocalStack puede dejar varios ARNs; hay que quitar listeners antes del TG)
+    log "Deleting ELBv2 load balancers matching project '$project_name'..."
+    local all_lb_arns
+    all_lb_arns=$(aws elbv2 describe-load-balancers \
+        --query "LoadBalancers[?contains(LoadBalancerName, \`${project_name}\`)].LoadBalancerArn" \
+        --output text 2>/dev/null || echo "")
+    for lb_arn in $all_lb_arns; do
+        [ -z "$lb_arn" ] || [ "$lb_arn" = "None" ] && continue
+        log "Deleting listeners and load balancer: $lb_arn"
+        local lis
+        lis=$(aws elbv2 describe-listeners \
+            --load-balancer-arn "$lb_arn" \
+            --query 'Listeners[].ListenerArn' \
+            --output text 2>/dev/null || echo "")
+        for la in $lis; do
+            aws elbv2 delete-listener --listener-arn "$la" 2>/dev/null || true
+        done
+        aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" 2>/dev/null || warning "Failed to delete load balancer $lb_arn"
+    done
+    sleep 3
+
+    delete_target_group_by_arn_or_name() {
+        local tg_arn="$1"
+        local tg_name="$2"
+        local arn="$tg_arn"
+        if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            arn=$(aws elbv2 describe-target-groups \
+                --names "$tg_name" \
+                --query 'TargetGroups[0].TargetGroupArn' \
+                --output text 2>/dev/null || echo "")
         fi
-        success "Load Balancer deleted: $lb_name"
-    fi
+        if [ -n "$arn" ] && [ "$arn" != "None" ]; then
+            log "Deleting Target Group: $arn"
+            aws elbv2 delete-target-group --target-group-arn "$arn" || warning "Failed to delete target group: $arn"
+        fi
+    }
+
+    local tg_arn_file
+    tg_arn_file=$(grep "BACKEND_TG_ARN=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    delete_target_group_by_arn_or_name "$tg_arn_file" "${project_name}-backend-tg"
+    tg_arn_file=$(grep "AI_SERVICE_TG_ARN=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
+    delete_target_group_by_arn_or_name "$tg_arn_file" "${project_name}-ai-service-tg"
     
     # Delete Launch Templates
     local launch_templates=("BACKEND_LT_ID" "AI_SERVICE_LT_ID")
@@ -284,6 +343,9 @@ destroy_compute() {
             aws ec2 delete-launch-template --launch-template-id "$lt_id" || warning "Failed to delete launch template: $lt_id"
         fi
     done
+
+    aws ec2 delete-launch-template --launch-template-name "${project_name}-backend-lt" >/dev/null 2>&1 || true
+    aws ec2 delete-launch-template --launch-template-name "${project_name}-ai-service-lt" >/dev/null 2>&1 || true
 }
 
 # Destroy Database Resources
@@ -296,13 +358,13 @@ destroy_databases() {
         local db_id=$(grep "$db_key=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
         if [ -n "$db_id" ]; then
             log "Deleting RDS instance: $db_id"
-            aws rds delete-db-instance \
+            aws_rds delete-db-instance \
                 --db-instance-identifier "$db_id" \
                 --skip-final-snapshot \
                 --delete-automated-backups || warning "Failed to delete RDS instance: $db_id"
             
             # Wait for instance to be deleted
-            aws rds wait db-instance-deleted --db-instance-identifier "$db_id" || warning "RDS deletion wait timeout"
+            aws_rds wait db-instance-deleted --db-instance-identifier "$db_id" || warning "RDS deletion wait timeout"
             success "RDS instance deleted: $db_id"
         fi
     done
@@ -311,7 +373,7 @@ destroy_databases() {
     local db_subnet_group_name=$(grep "DB_SUBNET_GROUP_NAME=" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d'=' -f2)
     if [ -n "$db_subnet_group_name" ]; then
         log "Deleting DB subnet group: $db_subnet_group_name"
-        aws rds delete-db-subnet-group --db-subnet-group-name "$db_subnet_group_name" || warning "Failed to delete DB subnet group"
+        aws_rds delete-db-subnet-group --db-subnet-group-name "$db_subnet_group_name" || warning "Failed to delete DB subnet group"
         success "DB subnet group deleted"
     fi
 }
@@ -331,6 +393,20 @@ destroy_security() {
         fi
     done
     
+    # Políticas IAM creadas por setup-security (no son LabRole)
+    local pol
+    for pol in smarttrip-sqs-access smarttrip-sns-access; do
+        local pol_arn
+        pol_arn=$(aws iam list-policies \
+            --scope Local \
+            --query "Policies[?PolicyName=='$pol'].Arn" \
+            --output text 2>/dev/null || echo "")
+        if [ -n "$pol_arn" ] && [ "$pol_arn" != "None" ]; then
+            log "Deleting IAM policy: $pol_arn"
+            aws iam delete-policy --policy-arn "$pol_arn" >/dev/null 2>&1 || warning "Failed to delete IAM policy: $pol"
+        fi
+    done
+
     # Note: LabRole and LabInstanceProfile are not deleted as they are Academy Lab resources
 }
 
@@ -467,45 +543,37 @@ cleanup_key_pairs() {
     done
 }
 
-# Cleanup
-cleanup() {
-    log "Cleaning up..."
-    
-    # Remove resource IDs file
-    if [ -f "$RESOURCE_IDS_FILE" ]; then
-        rm "$RESOURCE_IDS_FILE"
-        success "Resource IDs file removed"
-    fi
-    
-    # Clean up EC2 key pairs
-    cleanup_key_pairs
-    
-    # Remove log files (optional)
-    read -p "Remove log files? (yes/no): " remove_logs
-    if [ "$remove_logs" = "yes" ]; then
-        # Remove main log files
-        rm -f "$SCRIPT_DIR/infrastructure-setup.log"
-        rm -f "$SCRIPT_DIR/infrastructure-destroy.log"
-        
-        # Remove all timestamped setup logs
-        rm -f "$SCRIPT_DIR/infrastructure-setup-*.log"
-        
-        # Remove all timestamped destroy logs
-        rm -f "$SCRIPT_DIR/infrastructure-destroy-*.log"
-        
-        # Remove any other log files
-        rm -f "$SCRIPT_DIR/*.log"
-        
-        success "All log files removed"
-        
-        # Remove local key files
-        log "Removing local key files..."
-        local key_name=$(jq -r '.compute.backend.key_name' "$CONFIG_FILE" 2>/dev/null || echo "smarttrip-key")
+# Borra artefactos locales siempre (ejecuciones nuevas limpias).
+# Nota: los globs no deben ir entre comillas para expandir en bash.
+cleanup_local_workspace() {
+    log "Limpiando artefactos locales (logs, resource-ids, tmp, PEM)..."
+
+    rm -f "$RESOURCE_IDS_FILE"
+
+    rm -f "$SCRIPT_DIR/infrastructure-setup.log"
+    rm -f "$SCRIPT_DIR/infrastructure-destroy.log"
+    rm -f "$SCRIPT_DIR"/infrastructure-setup-*.log
+    rm -f "$SCRIPT_DIR"/infrastructure-destroy-*.log
+    rm -f "$SCRIPT_DIR"/*.log
+
+    rm -f "$SCRIPT_DIR/backend_db_status.tmp" "$SCRIPT_DIR/ai_service_db_status.tmp"
+    rm -f "$SCRIPT_DIR"/*_db_status.tmp
+
+    local key_name
+    while IFS= read -r key_name; do
+        [ -z "$key_name" ] || [ "$key_name" = "null" ] && continue
         rm -f "$SCRIPT_DIR/${key_name}.pem"
-        rm -f "$SCRIPT_DIR/smarttrip-key.pem"
-        rm -f "$SCRIPT_DIR/*.pem"
-        success "Local key files removed"
-    fi
+        rm -f "$SCRIPT_DIR"/"${key_name}"-*.pem
+    done < <(jq -r '.compute | to_entries[].value.key_name' "$CONFIG_FILE" 2>/dev/null | sort -u)
+
+    success "Workspace local limpio"
+}
+
+# Elimina claves en AWS y PEM locales (antes de borrar logs masivos).
+finalize_local_after_aws() {
+    log "Eliminando key pairs en AWS y archivos PEM locales..."
+    cleanup_key_pairs
+    cleanup_local_workspace
 }
 
 # Main destruction execution
@@ -515,6 +583,10 @@ main() {
     echo "=========================================="
     
     confirm_destruction
+
+    # Si algo falla en AWS, igual dejamos el directorio sin logs/pem/resource-ids.
+    trap finalize_local_after_aws EXIT
+
     check_dependencies
     
     log "Starting infrastructure destruction..."
@@ -525,15 +597,17 @@ main() {
     destroy_networking     # SQS, SNS, API Gateway
     destroy_storage        # S3 buckets
     destroy_databases      # RDS instances
-    destroy_security       # Security groups (last before VPC)
+    destroy_security       # Security groups + IAM policies SmartTrip
     destroy_vpc            # VPC resources (subnets, route tables, IGW, VPC)
     
-    cleanup
+    trap - EXIT
+    finalize_local_after_aws
     
     echo "=========================================="
     echo "Infrastructure destruction completed!"
     echo "=========================================="
     success "All SmartTrip resources have been destroyed"
+    rm -f "$SCRIPT_DIR/infrastructure-destroy.log"
 }
 
 # Execute main function

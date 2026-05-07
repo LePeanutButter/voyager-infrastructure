@@ -27,6 +27,10 @@ success() {
     echo "SUCCESS: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
+warning() {
+    echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
+}
+
 # Get VPC ID
 get_vpc_id() {
     grep "VPC_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2

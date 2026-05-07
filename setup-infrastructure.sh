@@ -77,15 +77,15 @@ load_config() {
 setup_infrastructure() {
     log "Starting SmartTrip infrastructure setup..."
     
-    # Execute setup scripts in optimized order (fast components first)
+    # Orden: bases de datos antes de monitoring para que las alarmas RDS tengan DBInstanceIdentifier en resource-ids.
     local scripts=(
         "setup-vpc.sh"
-        "setup-security.sh" 
+        "setup-security.sh"
         "setup-storage.sh"
         "setup-compute.sh"
         "setup-networking.sh"
-        "setup-monitoring.sh"
         "setup-databases.sh"
+        "setup-monitoring.sh"
     )
     
     for script in "${scripts[@]}"; do
@@ -118,7 +118,7 @@ main() {
     check_dependencies
     load_config
     setup_infrastructure
-    
+
     echo "=========================================="
     echo "Setup completed successfully!"
     echo "=========================================="

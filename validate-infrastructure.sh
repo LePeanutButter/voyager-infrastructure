@@ -32,6 +32,22 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
 }
 
+aws_sqs() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" sqs "$@"
+    else
+        aws sqs "$@"
+    fi
+}
+
+aws_rds() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" rds "$@"
+    else
+        aws rds "$@"
+    fi
+}
+
 # Validation counters
 TOTAL_CHECKS=0
 PASSED_CHECKS=0
@@ -155,7 +171,7 @@ validate_databases() {
     # Backend Database
     local backend_db_id=$(grep "BACKEND_DB_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     if [ -n "$backend_db_id" ]; then
-        local db_status=$(aws rds describe-db-instances \
+        local db_status=$(aws_rds describe-db-instances \
             --db-instance-identifier "$backend_db_id" \
             --query 'DBInstances[0].DBInstanceStatus' \
             --output text 2>/dev/null)
@@ -173,7 +189,7 @@ validate_databases() {
     # AI Service Database
     local ai_service_db_id=$(grep "AI_SERVICE_DB_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     if [ -n "$ai_service_db_id" ]; then
-        local db_status=$(aws rds describe-db-instances \
+        local db_status=$(aws_rds describe-db-instances \
             --db-instance-identifier "$ai_service_db_id" \
             --query 'DBInstances[0].DBInstanceStatus' \
             --output text 2>/dev/null)
@@ -318,7 +334,7 @@ validate_networking() {
     # SQS Queues
     local user_events_queue_url=$(grep "USER_EVENTS_QUEUE_URL=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     if [ -n "$user_events_queue_url" ]; then
-        local queue_attrs=$(aws sqs get-queue-attributes \
+        local queue_attrs=$(aws_sqs get-queue-attributes \
             --queue-url "$user_events_queue_url" \
             --attribute-names QueueArn \
             --query 'Attributes.QueueArn' \
@@ -435,7 +451,7 @@ generate_report() {
     fi
     
     # Load Balancer
-    local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d' -f2)
+    local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" 2>/dev/null | cut -d':' -f2)
     if [ -n "$lb_dns" ]; then
         echo "Load Balancer: $lb_dns"
     fi

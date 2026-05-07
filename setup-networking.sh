@@ -32,6 +32,15 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
+# SQS no siempre respeta AWS_ENDPOINT_URL en el AWS CLI; LocalStack requiere --endpoint-url explícito.
+aws_sqs() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" sqs "$@"
+    else
+        aws sqs "$@"
+    fi
+}
+
 # Create API Gateway REST API
 create_api_gateway() {
     log "Creating API Gateway REST API..."
@@ -195,13 +204,13 @@ create_sqs_queues() {
     local analytics_events_queue=$(jq -r '.message_queues.analytics_events_queue' "$CONFIG_FILE")
     
     # Create user events queue
-    local user_events_queue_url=$(aws sqs create-queue \
+    local user_events_queue_url=$(aws_sqs create-queue \
         --queue-name "$user_events_queue" \
         --attributes VisibilityTimeout=300,MessageRetentionPeriod=1209600 \
         --query 'QueueUrl' \
         --output text 2>/dev/null)
     
-    local user_events_queue_arn=$(aws sqs get-queue-attributes \
+    local user_events_queue_arn=$(aws_sqs get-queue-attributes \
         --queue-url "$user_events_queue_url" \
         --attribute-names QueueArn \
         --query 'Attributes.QueueArn' \
@@ -212,13 +221,13 @@ create_sqs_queues() {
     success "User events queue created: $user_events_queue"
     
     # Create recommendation events queue
-    local recommendation_events_queue_url=$(aws sqs create-queue \
+    local recommendation_events_queue_url=$(aws_sqs create-queue \
         --queue-name "$recommendation_events_queue" \
         --attributes VisibilityTimeout=300,MessageRetentionPeriod=1209600 \
         --query 'QueueUrl' \
         --output text 2>/dev/null)
     
-    local recommendation_events_queue_arn=$(aws sqs get-queue-attributes \
+    local recommendation_events_queue_arn=$(aws_sqs get-queue-attributes \
         --queue-url "$recommendation_events_queue_url" \
         --attribute-names QueueArn \
         --query 'Attributes.QueueArn' \
@@ -229,13 +238,13 @@ create_sqs_queues() {
     success "Recommendation events queue created: $recommendation_events_queue"
     
     # Create analytics events queue
-    local analytics_events_queue_url=$(aws sqs create-queue \
+    local analytics_events_queue_url=$(aws_sqs create-queue \
         --queue-name "$analytics_events_queue" \
         --attributes VisibilityTimeout=300,MessageRetentionPeriod=1209600 \
         --query 'QueueUrl' \
         --output text 2>/dev/null)
     
-    local analytics_events_queue_arn=$(aws sqs get-queue-attributes \
+    local analytics_events_queue_arn=$(aws_sqs get-queue-attributes \
         --queue-url "$analytics_events_queue_url" \
         --attribute-names QueueArn \
         --query 'Attributes.QueueArn' \
@@ -356,7 +365,7 @@ validate_networking_setup() {
     
     # Check SQS queues
     local user_events_queue_url=$(grep "USER_EVENTS_QUEUE_URL=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local queue_status=$(aws sqs get-queue-attributes \
+    local queue_status=$(aws_sqs get-queue-attributes \
         --queue-url "$user_events_queue_url" \
         --attribute-names ApproximateNumberOfMessages \
         --query 'Attributes.ApproximateNumberOfMessages' \

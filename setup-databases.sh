@@ -32,6 +32,14 @@ warning() {
     echo "WARNING: $1" | tee -a "$SCRIPT_DIR/infrastructure-setup.log" >&2
 }
 
+aws_rds() {
+    if [ -n "${AWS_ENDPOINT_URL:-}" ]; then
+        aws --endpoint-url "$AWS_ENDPOINT_URL" rds "$@"
+    else
+        aws rds "$@"
+    fi
+}
+
 # Get VPC ID and subnet IDs
 get_network_info() {
     local vpc_id=$(grep "VPC_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
@@ -69,14 +77,14 @@ create_db_subnet_group() {
     done
     
     # Check if DB subnet group already exists and validate it
-    local existing_subnet_group=$(aws rds describe-db-subnet-groups \
+    local existing_subnet_group=$(aws_rds describe-db-subnet-groups \
         --db-subnet-group-name "$subnet_group_name" \
         --query 'DBSubnetGroups[0].DBSubnetGroupName' \
         --output text 2>/dev/null || echo "")
     
     if [ -n "$existing_subnet_group" ] && [ "$existing_subnet_group" != "None" ]; then
         # Check if existing subnet group uses correct subnets
-        local existing_subnets=$(aws rds describe-db-subnet-groups \
+        local existing_subnets=$(aws_rds describe-db-subnet-groups \
             --db-subnet-group-name "$subnet_group_name" \
             --query 'DBSubnetGroups[0].Subnets[].SubnetIdentifier' \
             --output text 2>/dev/null || echo "")
@@ -99,12 +107,12 @@ create_db_subnet_group() {
         else
             echo "Updating DB subnet group to use correct subnets..." | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
             # Delete and recreate subnet group with correct subnets
-            aws rds delete-db-subnet-group \
+            aws_rds delete-db-subnet-group \
                 --db-subnet-group-name "$subnet_group_name" || echo "Failed to delete existing subnet group"
             
             # Create DB subnet group with correct subnets
             echo "Creating DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
-            aws rds create-db-subnet-group \
+            aws_rds create-db-subnet-group \
                 --db-subnet-group-name "$subnet_group_name" \
                 --db-subnet-group-description "Subnet group for SmartTrip databases" \
                 --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
@@ -114,7 +122,7 @@ create_db_subnet_group() {
     else
         # Create new DB subnet group
         echo "Creating new DB subnet group with subnets: ${subnet_ids[*]}" | tee -a "$SCRIPT_DIR/infrastructure-setup.log"
-        aws rds create-db-subnet-group \
+        aws_rds create-db-subnet-group \
             --db-subnet-group-name "$subnet_group_name" \
             --db-subnet-group-description "Subnet group for SmartTrip databases" \
             --subnet-ids "${subnet_ids[@]}" || error_exit "Failed to create DB subnet group"
@@ -123,6 +131,35 @@ create_db_subnet_group() {
     fi
     
     echo "DB_SUBNET_GROUP_NAME=$subnet_group_name" >> "$RESOURCE_IDS_FILE"
+}
+
+# Espera RDS con logs periódicos (aws_rds wait no imprime nada y parece congelado).
+wait_for_rds_available() {
+    local identifier="$1"
+    local max_attempts="${2:-240}"
+    local interval="${3:-15}"
+    local attempt=0
+
+    log "Esperando RDS $identifier (estado cada ${interval}s, máx. $((max_attempts * interval / 60)) min)..."
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        local status
+        status=$(aws_rds describe-db-instances \
+            --db-instance-identifier "$identifier" \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text 2>/dev/null || echo "unknown")
+
+        if [ "$status" = "available" ]; then
+            success "RDS instance $identifier is now available"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+        log "RDS $identifier estado: $status (intento $attempt/$max_attempts)"
+        sleep "$interval"
+    done
+
+    error_exit "Timeout esperando RDS $identifier en estado available"
 }
 
 # Create RDS Instance
@@ -147,7 +184,7 @@ create_rds_instance() {
     log "Creating RDS instance: $identifier"
     
     # Check if instance already exists
-    local existing_instance=$(aws rds describe-db-instances \
+    local existing_instance=$(aws_rds describe-db-instances \
         --db-instance-identifier "$identifier" \
         --query 'DBInstances[0].DBInstanceStatus' \
         --output text 2>/dev/null || echo "")
@@ -155,11 +192,14 @@ create_rds_instance() {
     if [ -n "$existing_instance" ]; then
         warning "RDS instance $identifier already exists with status: $existing_instance"
         echo "$db_key=$identifier" >> "$RESOURCE_IDS_FILE"
+        if [ "$existing_instance" != "available" ]; then
+            wait_for_rds_available "$identifier"
+        fi
         return 0
     fi
     
     # Create RDS instance
-    aws rds create-db-instance \
+    aws_rds create-db-instance \
         --db-instance-identifier "$identifier" \
         --db-instance-class "$instance_class" \
         --engine "$engine" \
@@ -175,16 +215,12 @@ create_rds_instance() {
         --no-publicly-accessible \
         --no-storage-encrypted \
         --no-deletion-protection \
-        --tags Key=Name,Value="$project_name-$identifier" Key=Project,Value="$project_name" || error_exit "Failed to create RDS instance: $identifier"
+        --tags "Key=Name,Value=$project_name-$identifier" "Key=Project,Value=$project_name" || error_exit "Failed to create RDS instance: $identifier"
     
     echo "$db_key=$identifier" >> "$RESOURCE_IDS_FILE"
     success "RDS instance creation initiated: $identifier"
-    
-    # Wait for instance to become available
-    log "Waiting for RDS instance $identifier to become available..."
-    aws rds wait db-instance-available --db-instance-identifier "$identifier"
-    
-    success "RDS instance $identifier is now available"
+
+    wait_for_rds_available "$identifier"
 }
 
 # Get Database Connection Information
@@ -193,17 +229,17 @@ get_database_info() {
     
     log "Retrieving connection information for $identifier"
     
-    local endpoint=$(aws rds describe-db-instances \
+    local endpoint=$(aws_rds describe-db-instances \
         --db-instance-identifier "$identifier" \
         --query 'DBInstances[0].Endpoint.Address' \
         --output text 2>/dev/null)
     
-    local port=$(aws rds describe-db-instances \
+    local port=$(aws_rds describe-db-instances \
         --db-instance-identifier "$identifier" \
         --query 'DBInstances[0].Endpoint.Port' \
         --output text 2>/dev/null)
     
-    local status=$(aws rds describe-db-instances \
+    local status=$(aws_rds describe-db-instances \
         --db-instance-identifier "$identifier" \
         --query 'DBInstances[0].DBInstanceStatus' \
         --output text 2>/dev/null)
@@ -280,7 +316,7 @@ validate_databases() {
     local ai_service_db_id=$(grep "AI_SERVICE_DB_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Check backend database
-    local backend_status=$(aws rds describe-db-instances \
+    local backend_status=$(aws_rds describe-db-instances \
         --db-instance-identifier "$backend_db_id" \
         --query 'DBInstances[0].DBInstanceStatus' \
         --output text 2>/dev/null)
@@ -293,7 +329,7 @@ validate_databases() {
     fi
     
     # Check AI service database
-    local ai_status=$(aws rds describe-db-instances \
+    local ai_status=$(aws_rds describe-db-instances \
         --db-instance-identifier "$ai_service_db_id" \
         --query 'DBInstances[0].DBInstanceStatus' \
         --output text 2>/dev/null)

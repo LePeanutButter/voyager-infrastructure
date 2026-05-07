@@ -59,7 +59,7 @@ create_log_groups() {
         # Create log group
         aws logs create-log-group \
             --log-group-name "$log_group" \
-            --tags Key=Name,Value="$log_group" Key=Project,Value="$project_name" || error_exit "Failed to create log group: $log_group"
+            --tags "Name=$log_group,Project=$project_name" || error_exit "Failed to create log group: $log_group"
         
         # Set retention policy (14 days)
         aws logs put-retention-policy \
@@ -151,6 +151,11 @@ create_rds_alarms() {
     # Get database identifiers
     local backend_db_id=$(grep "BACKEND_DB_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     local ai_service_db_id=$(grep "AI_SERVICE_DB_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+
+    if [ -z "$backend_db_id" ] || [ -z "$ai_service_db_id" ]; then
+        warning "Skipping RDS CloudWatch alarms: DB identifiers not in resource-ids yet (setup-databases runs after monitoring)."
+        return 0
+    fi
     
     # Backend Database CPU Alarm
     aws cloudwatch put-metric-alarm \
