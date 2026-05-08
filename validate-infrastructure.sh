@@ -518,8 +518,8 @@ generate_report() {
     fi
     
     if [ -n "$api_url" ]; then
-        echo "Backend API: $api_url/backend"
-        echo "AI Service API: $api_url/ai"
+        echo "Backend API (REST proxy ANY→:8080/api/v1): $api_url/backend/<path>"
+        echo "AI Service API (REST proxy ANY→:8000/api/v1): $api_url/ai/<path>"
     fi
     
     echo "=========================================="

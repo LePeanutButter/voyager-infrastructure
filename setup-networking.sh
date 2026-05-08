@@ -73,10 +73,10 @@ create_api_resources() {
     
     local api_id=$(grep "API_GATEWAY_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
-    # Get root resource
+    # Root resource (path "/"), not items[0] (orden no garantizado)
     local root_resource_id=$(aws apigateway get-resources \
         --rest-api-id "$api_id" \
-        --query 'items[0].id' \
+        --query "items[?path=='/'].id | [0]" \
         --output text 2>/dev/null)
     
     if [ -z "$root_resource_id" ]; then
@@ -106,61 +106,89 @@ create_api_resources() {
     
     echo "AI_SERVICE_RESOURCE_ID=$ai_service_resource_id" >> "$RESOURCE_IDS_FILE"
     success "AI service resource created: $ai_service_resource_id"
-    
+
+    # Greedy proxy: /backend/{proxy+} y /ai/{proxy+} → reenvío a /api/v1/{proxy} en cada puerto del ALB
+    local backend_proxy_id=$(aws apigateway create-resource \
+        --rest-api-id "$api_id" \
+        --parent-id "$backend_resource_id" \
+        --path-part "{proxy+}" \
+        --query 'id' \
+        --output text 2>/dev/null) || error_exit "Failed to create backend {proxy+} resource"
+    echo "BACKEND_PROXY_RESOURCE_ID=$backend_proxy_id" >> "$RESOURCE_IDS_FILE"
+    success "Backend greedy proxy resource created: $backend_proxy_id"
+
+    local ai_proxy_id=$(aws apigateway create-resource \
+        --rest-api-id "$api_id" \
+        --parent-id "$ai_service_resource_id" \
+        --path-part "{proxy+}" \
+        --query 'id' \
+        --output text 2>/dev/null) || error_exit "Failed to create AI {proxy+} resource"
+    echo "AI_PROXY_RESOURCE_ID=$ai_proxy_id" >> "$RESOURCE_IDS_FILE"
+    success "AI greedy proxy resource created: $ai_proxy_id"
+
     echo "$root_resource_id $backend_resource_id $ai_service_resource_id"
 }
 
 # Create API Gateway Methods and Integrations
+# HTTP_PROXY + ANY: reenvía todos los métodos y rutas bajo /api/v1 hacia el ALB (REST según API-ENDPOINTS.md).
+# WebSocket (p. ej. /api/v1/ws-chat) no puede pasar por REST API Gateway; el cliente debe usar el ALB :8080 directo.
 create_api_methods() {
-    log "Creating API Gateway methods and integrations..."
+    log "Creating API Gateway methods and integrations (HTTP_PROXY ANY + greedy {proxy+})..."
     
     local api_id=$(grep "API_GATEWAY_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local backend_resource_id=$(grep "BACKEND_RESOURCE_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    local ai_service_resource_id=$(grep "AI_SERVICE_RESOURCE_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    local backend_proxy_id=$(grep "BACKEND_PROXY_RESOURCE_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
+    local ai_proxy_id=$(grep "AI_PROXY_RESOURCE_ID=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
     
     # Get load balancer DNS name
     local lb_dns=$(grep "Load Balancer DNS:" "$RESOURCE_IDS_FILE" | awk -F': ' '{print $2}' || echo "")
     if [ -z "$lb_dns" ]; then
         error_exit "Load Balancer DNS not found. Please run setup-compute.sh first."
     fi
+    if [ -z "$backend_proxy_id" ] || [ -z "$ai_proxy_id" ]; then
+        error_exit "BACKEND_PROXY_RESOURCE_ID / AI_PROXY_RESOURCE_ID missing. create_api_resources must create {proxy+}."
+    fi
     
-    # Create backend GET method
+    # Backend: GET https://.../stage/backend/users/login → http://lb:8080/api/v1/users/login
     aws apigateway put-method \
         --rest-api-id "$api_id" \
-        --resource-id "$backend_resource_id" \
-        --http-method GET \
-        --authorization-type "NONE" || error_exit "Failed to create backend GET method"
-    
-    # Create backend GET integration
+        --resource-id "$backend_proxy_id" \
+        --http-method ANY \
+        --authorization-type "NONE" \
+        --request-parameters "method.request.path.proxy=true" \
+        || error_exit "Failed to create backend ANY method"
+
     aws apigateway put-integration \
         --rest-api-id "$api_id" \
-        --resource-id "$backend_resource_id" \
-        --http-method GET \
-        --type HTTP \
-        --integration-http-method GET \
-        --uri "http://$lb_dns/{proxy}" \
+        --resource-id "$backend_proxy_id" \
+        --http-method ANY \
+        --type HTTP_PROXY \
+        --integration-http-method ANY \
+        --uri "http://${lb_dns}:8080/api/v1/{proxy}" \
         --request-parameters "integration.request.path.proxy=method.request.path.proxy" \
-        --connection-type INTERNET || error_exit "Failed to create backend GET integration"
-    
-    # Create AI service POST method
+        --connection-type INTERNET \
+        || error_exit "Failed to create backend HTTP_PROXY integration"
+
+    # IA: GET https://.../stage/ai/recommendations/... → http://lb:8000/api/v1/recommendations/...
     aws apigateway put-method \
         --rest-api-id "$api_id" \
-        --resource-id "$ai_service_resource_id" \
-        --http-method POST \
-        --authorization-type "NONE" || error_exit "Failed to create AI service POST method"
-    
-    # Create AI service POST integration
+        --resource-id "$ai_proxy_id" \
+        --http-method ANY \
+        --authorization-type "NONE" \
+        --request-parameters "method.request.path.proxy=true" \
+        || error_exit "Failed to create AI ANY method"
+
     aws apigateway put-integration \
         --rest-api-id "$api_id" \
-        --resource-id "$ai_service_resource_id" \
-        --http-method POST \
-        --type HTTP \
-        --integration-http-method POST \
-        --uri "http://$lb_dns/{proxy}" \
+        --resource-id "$ai_proxy_id" \
+        --http-method ANY \
+        --type HTTP_PROXY \
+        --integration-http-method ANY \
+        --uri "http://${lb_dns}:8000/api/v1/{proxy}" \
         --request-parameters "integration.request.path.proxy=method.request.path.proxy" \
-        --connection-type INTERNET || error_exit "Failed to create AI service POST integration"
-    
-    success "API Gateway methods and integrations created"
+        --connection-type INTERNET \
+        || error_exit "Failed to create AI HTTP_PROXY integration"
+
+    success "API Gateway proxy integrations created (ANY → ALB :8080 / :8000 + /api/v1)"
 }
 
 # Deploy API Gateway
@@ -412,10 +440,12 @@ main() {
     grep -E "(API_GATEWAY|QUEUE|TOPIC)" "$RESOURCE_IDS_FILE"
     echo "=========================================="
     
-    echo "API Endpoints:"
+    echo "API Endpoints (REST vía API Gateway; prefijo /api/v1 lo añade el proxy hacia el ALB):"
     local api_url=$(grep "API_GATEWAY_URL=" "$RESOURCE_IDS_FILE" | cut -d'=' -f2)
-    echo "Backend API: $api_url/backend"
-    echo "AI Service API: $api_url/ai"
+    echo "Backend base:  $api_url/backend   → Spring :8080/api/v1/..."
+    echo "AI base:       $api_url/ai         → FastAPI :8000/api/v1/..."
+    echo "Ejemplo:       POST $api_url/backend/users/login"
+    echo "WebSocket STOMP no usa API Gateway; usar ALB :8080 (p. ej. .../api/v1/ws-chat con SockJS)."
     echo "=========================================="
 }
 

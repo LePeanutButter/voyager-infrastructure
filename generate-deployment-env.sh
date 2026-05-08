@@ -6,8 +6,8 @@
 #   ./generate-deployment-env.sh [--out DIR] [--password PASS | env DEPLOY_BUNDLE_PASSWORD]
 #   ./generate-deployment-env.sh --no-zip          # only write plaintext .env files
 #
-# Secrets for backend (optional — override placeholders):
-#   JWT_SECRET, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+#   GENERATE_ENV_USE_API_GATEWAY — por defecto "auto": si existe API_GATEWAY_URL en resource-ids,
+#     el front usa Gateway (/backend, /ai) sin /api/v1. Pon "0" para forzar ALB aunque exista el GW.
 #
 # Prerequisites: bash, jq, openssl; zip optional for packaging.
 
@@ -140,17 +140,46 @@ if [ -n "$LB_DNS" ]; then
     BACKEND_PUBLIC_HTTP="http://${LB_DNS}:8080"
 fi
 
+# Frontend: API Gateway por defecto si hay API_GATEWAY_URL; si no, ALB + /api/v1.
+# El cliente concatena baseURL + "/travel-plans"; con GW la base es .../prod/backend (sin /api/v1).
+USE_APIGW="${GENERATE_ENV_USE_API_GATEWAY:-auto}"
+case "$USE_APIGW" in
+    auto|"") [ -n "$API_GW_URL" ] && USE_APIGW=1 || USE_APIGW=0 ;;
+    1|true|yes) USE_APIGW=1 ;;
+    *) USE_APIGW=0 ;;
+esac
+
+if [ "$USE_APIGW" = "1" ] && [ -z "$API_GW_URL" ]; then
+    echo "WARNING: API Gateway elegido pero API_GATEWAY_URL vacío — usando ALB para el front." >&2
+    USE_APIGW=0
+fi
+
+if [ "$USE_APIGW" = "1" ]; then
+    FRONTEND_API_BASE="${API_GW_URL}/backend"
+    FRONTEND_AI_BASE="${API_GW_URL}/ai"
+    FRONTEND_MODE_COMMENT="API Gateway → ALB (HTTP_PROXY ANY + /backend|/ai/{proxy+}); baseURL sin /api/v1."
+else
+    FRONTEND_API_BASE="${BACKEND_PUBLIC_HTTP:-http://REPLACE_LB_DNS:8080}/api/v1"
+    FRONTEND_AI_BASE="http://${LB_DNS:-REPLACE_LB_DNS}:8000/api/v1"
+    FRONTEND_MODE_COMMENT="ALB directo :8080 / :8000 + /api/v1 (igual que localhost)."
+fi
+
 GOOGLE_REDIRECT="${GOOGLE_REDIRECT_URI:-}"
-if [ -z "$GOOGLE_REDIRECT" ] && [ -n "$BACKEND_PUBLIC_HTTP" ]; then
-    GOOGLE_REDIRECT="${BACKEND_PUBLIC_HTTP}/api/v1/auth/google/callback"
+if [ -z "$GOOGLE_REDIRECT" ]; then
+    if [ "$USE_APIGW" = "1" ] && [ -n "$API_GW_URL" ]; then
+        GOOGLE_REDIRECT="${API_GW_URL}/backend/auth/google/callback"
+    elif [ -n "$BACKEND_PUBLIC_HTTP" ]; then
+        GOOGLE_REDIRECT="${BACKEND_PUBLIC_HTTP}/api/v1/auth/google/callback"
+    fi
 fi
 
 cat >"$OUT_DIR/frontend.env" <<EOF
-# Generated for voyager-web-client — ALB (puertos 8080 / 8000 como en desarrollo local).
-VITE_API_BASE_URL=${BACKEND_PUBLIC_HTTP:-http://REPLACE_LB_DNS:8080}/api/v1
-VITE_AI_SERVICE_BASE_URL=http://${LB_DNS:-REPLACE_LB_DNS}:8000/api/v1
+# Generated for voyager-web-client — ${FRONTEND_MODE_COMMENT}
+# WebSocket (SockJS) no pasa por REST API Gateway; sigue siendo el ALB :8080.
+VITE_API_BASE_URL=${FRONTEND_API_BASE}
+VITE_AI_SERVICE_BASE_URL=${FRONTEND_AI_BASE}
 VITE_WS_BROKER_URL=${BACKEND_PUBLIC_HTTP:-http://REPLACE_LB_DNS:8080}/api/v1/ws-chat
-# Alternativa API Gateway (HTTP): ${API_GW_URL:-}/backend — revisa rutas/proxy en setup-networking.sh
+# OAuth del backend debe apuntar a una URL que llegue a Spring /api/v1/auth/google/callback (ALB o misma lógica vía GW).
 # Bucket estático S3 website (ajusta si usas CloudFront):
 # VITE_PUBLIC_SITE_URL=http://${FRONTEND_BUCKET}.s3-website-${REGION}.amazonaws.com
 EOF
@@ -185,6 +214,9 @@ echo "Wrote:"
 echo "  $OUT_DIR/frontend.env"
 echo "  $OUT_DIR/backend.env"
 echo "  $OUT_DIR/ai-service.env"
+if [ "$USE_APIGW" = "1" ]; then
+    echo "NOTE: Frontend URLs usan API Gateway (${API_GW_URL}); OAuth en backend.env → .../backend/auth/google/callback" >&2
+fi
 
 if [ "$DO_ZIP" != "1" ]; then
     echo "Done (no zip)."
