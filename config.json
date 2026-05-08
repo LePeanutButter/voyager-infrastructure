@@ -36,7 +36,8 @@
       "storage_type": "gp3",
       "username": "smarttrip_user",
       "password": "SmartTrip2024!",
-      "backup_retention": 7
+      "backup_retention": 7,
+      "database_name": "smarttrip-backend"
     },
     "ai_service": {
       "identifier": "smarttrip-ai-db", 
@@ -47,7 +48,8 @@
       "storage_type": "gp3",
       "username": "smarttrip_user",
       "password": "SmartTrip2024!",
-      "backup_retention": 7
+      "backup_retention": 7,
+      "database_name": "tourism_ai"
     }
   },
   "compute": {

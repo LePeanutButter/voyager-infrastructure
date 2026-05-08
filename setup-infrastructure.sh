@@ -103,6 +103,14 @@ setup_infrastructure() {
     log "Validating infrastructure..."
     "$SCRIPT_DIR/validate-infrastructure.sh" || error_exit "Infrastructure validation failed"
     
+    log "Generating deployment environment files (generate-deployment-env.sh)..."
+    if [ ! -f "$SCRIPT_DIR/generate-deployment-env.sh" ]; then
+        error_exit "generate-deployment-env.sh not found in $SCRIPT_DIR"
+    fi
+    chmod +x "$SCRIPT_DIR/generate-deployment-env.sh"
+    "$SCRIPT_DIR/generate-deployment-env.sh" || error_exit "generate-deployment-env.sh failed"
+    success "Deployment env files generated (see deployment-export-* under $SCRIPT_DIR)"
+    
     success "Infrastructure setup completed successfully!"
     log "Log file: $LOG_FILE"
 }
