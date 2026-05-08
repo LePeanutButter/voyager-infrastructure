@@ -101,6 +101,7 @@ setup_infrastructure() {
     
     # Validate infrastructure
     log "Validating infrastructure..."
+    chmod +x "$SCRIPT_DIR/validate-infrastructure.sh"
     "$SCRIPT_DIR/validate-infrastructure.sh" || error_exit "Infrastructure validation failed"
     
     log "Generating deployment environment files (generate-deployment-env.sh)..."

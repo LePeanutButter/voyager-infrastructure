@@ -3,6 +3,7 @@
 # Creates RDS PostgreSQL instances for backend and AI services
 
 set -e
+export AWS_PAGER=""
 
 # Source configuration and utilities
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
